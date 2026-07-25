@@ -15,11 +15,53 @@ Client prompt:
 
 ## Setup Instructions
 
-_To be defined during Architecture phase (see `spec/architecture.md`)._
+Requires Python 3.11+. This project uses a standard `pyproject.toml` +
+virtualenv workflow (no Nix/uv requirement, unlike `projects/maply` in this
+workspace — plain `venv`/`pip` is enough here).
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"        # core deps + pytest/ruff
+```
+
+Core dependencies: `geopandas`, `shapely`, `duckdb` (spatial extension),
+`pyyaml`, `streamlit`, `folium`, `requests`, `pyarrow`. See
+`spec/architecture.md` Section 2 for why each was chosen (CRS handling,
+GeoParquet + DuckDB as the storage/query layer instead of PostGIS, etc.).
+
+Raw source data lives in `data/raw/` and is git-ignored (see `.gitignore`) —
+it's fetched by the acquisition adapters (`src/acquisition/`), not committed.
+For local development without network access, a few already-downloaded
+GeoJSON files may be present there; the ArcGIS REST adapter falls back to
+them if the live portal is unreachable (see `src/pipeline/run.py`).
 
 ## Development Workflow
 
-_To be defined once tooling is selected in `spec/architecture.md`._
+```bash
+pytest -q                      # run all tests
+pytest tests/etl/test_grid.py  # single test file
+ruff check .                   # lint (line-length 100; E, F, I, UP, B rules)
+```
+
+Run the PoC pipeline end-to-end (acquisition → normalize → spatial join,
+per `spec/tasks.md` Milestone 1):
+
+```bash
+python -m pipeline.run --stage poc
+```
+
+Then view the PoC join output on a map:
+
+```bash
+streamlit run src/dashboard/app.py
+```
+
+Code layout mirrors `spec/architecture.md` Section 5 exactly:
+`src/acquisition/` (source adapters), `src/etl/` (normalize + spatial
+join/grid), `src/scoring/` (restoration-priority scoring, M2+),
+`src/pipeline/` (orchestrator), `src/dashboard/` (Streamlit app). Tests live
+under `tests/`, mirroring the same package structure.
 
 ## Specifications
 
