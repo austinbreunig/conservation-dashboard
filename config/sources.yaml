@@ -1,0 +1,108 @@
+# Source adapter configuration (T1.2, architecture Section 5.1/6.1/6.2).
+#
+# Each entry under `sources:` is consumed by one SourceAdapter instance
+# (src/acquisition/). Adding a new county-sourced layer means adding a new
+# entry here, not new code (FR-1.3, NFR-7) -- the ArcGISRestAdapter class
+# (src/acquisition/arcgis_rest.py) is generic and parameterized entirely by
+# these fields.
+#
+# Schema (per entry):
+#   name           Unique source id; matches SourceAdapter.name and is
+#                   stamped onto every normalized record as `source_name`
+#                   (architecture 2.5, FR-1.7/NFR-11 provenance tracking).
+#   source_type    "real" | "synthetic" -- stamped onto every normalized
+#                   record as `source_type`. All ArcGIS REST sources below
+#                   are "real" (FR-1.5). The synthetic moose-sightings
+#                   adapter (src/acquisition/synthetic.py) is not
+#                   config-driven -- see that module -- so it has no entry
+#                   here.
+#   adapter        Which adapter class consumes this entry. "arcgis_rest"
+#                   -> src.acquisition.arcgis_rest.ArcGISRestAdapter.
+#   service_url    Base ArcGIS REST FeatureServer/MapServer *service* URL
+#                   (no trailing slash, no /query, no layer id) -- e.g.
+#                   ".../FeatureServer" or ".../MapServer". The adapter
+#                   builds the actual query endpoint as
+#                   "<service_url>/<layer_id>/query" (architecture 6.2).
+#   layer_id       Integer layer id within the service.
+#   local_fixture  Repo-relative path to an already-downloaded GeoJSON
+#                   snapshot of this source, used as a dev/offline fallback
+#                   when the live portal is unreachable (data/raw/ is
+#                   git-ignored -- see .gitignore -- so this path may not
+#                   exist in every checkout; src/pipeline/run.py handles
+#                   that case).
+#   notes          Free text; used below to record what T1.7's live
+#                   investigation did/didn't confirm for this specific
+#                   entry.
+#
+# Access model (confirmed 2026-07-24 via a live query against the real
+# portal for 3 of these 4 layers -- see
+# docs/decisions/arcgis-rest-access-model.md for the full T1.7 write-up):
+# anonymous read access, no API key required; standard ArcGIS REST
+# resultOffset/resultRecordCount pagination; maxRecordCount discoverable
+# per-layer via a "<layer_url>?f=json" metadata GET.
+
+sources:
+  - name: boco_trailheads
+    source_type: real
+    adapter: arcgis_rest
+    service_url: https://maps.bouldercounty.org/arcgis/rest/services/ParksOpenSpace/OP_BCPOS_TRAILHEADS/MapServer
+    layer_id: 0
+    local_fixture: data/raw/boco_trailheads.geojson
+    notes: >
+      Confirmed live 2026-07-24 (T1.7/T1.8): anonymous access, 38
+      features, maxRecordCount=1000, schema/feature-count parity with
+      data/raw/boco_trailheads.geojson within a small documented drift
+      tolerance (see docs/decisions/arcgis-rest-access-model.md).
+
+  - name: boco_trailsegs
+    source_type: real
+    adapter: arcgis_rest
+    service_url: null
+    layer_id: null
+    local_fixture: data/raw/boco_trailsegs.geojson
+    notes: >
+      Query endpoint NOT conclusively identified during T1.7's live
+      investigation window. Searched maps.bouldercounty.org's
+      Transportation/ folder (TRAILS_RegionalTrails: 261 features;
+      TRAILS_Bikeways: 9 features) and ParksOpenSpace/ folder -- neither
+      matches this layer's 129-feature count (data/raw/boco_trailsegs.geojson,
+      internal GeoJSON `name`: "vwTrailSegmentsDissolved", a SQL-view-style
+      name suggesting it may be published under a folder/service not yet
+      checked). Same portal and adapter shape as the other three entries
+      here is assumed, not yet verified. Follow-up action item, not a T1.2
+      blocker -- this entry still parses via yaml.safe_load with adapter
+      type/name/source_type/local_fixture present, and the pipeline
+      (src/pipeline/run.py) only needs the local_fixture for M1 PoC scope
+      (it exercises the boco_trailheads entry live, per T1.8/T1.11).
+
+  - name: boco_critical_wildlife_habitats
+    source_type: real
+    adapter: arcgis_rest
+    service_url: https://maps.bouldercounty.org/arcgis/rest/services/PLANNING/BCCP_CriticalWildlifeHabitats/MapServer
+    layer_id: 0
+    local_fixture: data/raw/boco_critical_wildlife_habitats.geojson
+    notes: >
+      Confirmed live 2026-07-24 (T1.7): anonymous access, 77 features,
+      maxRecordCount=1000, matches data/raw/boco_critical_wildlife_habitats.geojson's
+      feature count exactly. Feeds its own proximity scoring input
+      (dist_habitat_m, W_HABITAT) -- architecture 2.4/5.1, not merged with
+      wildlife corridors below.
+
+  - name: boco_wildlife_corridors
+    source_type: real
+    adapter: arcgis_rest
+    service_url: https://maps.bouldercounty.org/arcgis/rest/services/PLANNING/BCCP_WildlifeMigrationCorridors/FeatureServer
+    layer_id: 0
+    local_fixture: data/raw/boco_wildlife_corridors.geojson
+    notes: >
+      Confirmed live 2026-07-24 (T1.7): anonymous access, 3 features,
+      maxRecordCount=2000, matches data/raw/boco_wildlife_corridors.geojson's
+      feature count exactly. Feeds its own proximity scoring input
+      (dist_corridor_m, W_CORRIDOR) -- architecture 2.4/5.1, distinct from
+      critical wildlife habitats above.
+
+# County roads (FR-1.8) and the county boundary polygon (FR-1.9) are
+# confirmed sources but their files/endpoints have not yet been acquired
+# (plan.md, spec/tasks.md T2.2/T3.2) -- deliberately no entry for either
+# yet. Adding them later is a config-only change (new entries following
+# the same schema above), per FR-1.3/NFR-7 -- no adapter code changes.
