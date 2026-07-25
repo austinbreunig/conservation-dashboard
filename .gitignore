@@ -8,7 +8,11 @@ data/processed/*
 __pycache__/
 *.pyc
 .venv/
+venv/
 .env
+
+# Nix / direnv
+.direnv/
 
 # OS
 .DS_Store
