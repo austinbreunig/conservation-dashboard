@@ -29,10 +29,12 @@ single-county extent, not statewide or regional.
 * Produce a weekly-refreshed, vector-based scoring grid covering the AOI
   (Boulder County), where each grid cell receives a restoration-priority
   score on a **0 (low) to 10 (high) scale**, driven by moose-sighting
-  density and weighted up by proximity to critical wildlife
-  habitats/corridors, trails, and roads (closer = higher weight for all
-  three) — a defensible, explainable signal for where restoration effort
-  should be focused, based on the joined data (not a black-box model).
+  density and weighted up by proximity to critical wildlife habitats,
+  wildlife corridors, trails, and roads (closer = higher weight for all
+  four; habitat weighted marginally higher than corridors — see
+  `spec/architecture.md` 2.4) — a defensible, explainable signal for where
+  restoration effort should be focused, based on the joined data (not a
+  black-box model).
 * Build a system sized and operable for a small nonprofit — low cost, low
   ongoing maintenance burden, understandable by non-engineers.
 * Portfolio goal: exercise and demonstrate ETL, spreadsheet/API ingestion,
@@ -50,8 +52,8 @@ single-county extent, not statewide or regional.
 * The dashboard highlights restoration priorities as a color-coded scoring
   grid over the AOI, each cell scored 0–10, and the logic behind that
   prioritization (moose-sighting density weighted by proximity to critical
-  wildlife habitats/corridors, trails, and roads) is documented and
-  inspectable — not a hidden black box.
+  wildlife habitats, wildlife corridors, trails, and roads) is documented
+  and inspectable — not a hidden black box.
 * Bad or malformed input records (missing/invalid coordinates, duplicates,
   schema drift) are caught and flagged rather than silently corrupting the
   output.
@@ -89,6 +91,13 @@ single-county extent, not statewide or regional.
   Feature Service adapter. Unlike the other five layers, the roads
   GeoJSON file has **not yet been downloaded** — only the source is
   confirmed; acquisition is still pending on the consultant's end.
+* A seventh data layer — a **Boulder County boundary polygon** — was
+  confirmed 2026-07-24, presumed from the same ArcGIS REST portal (to be
+  verified when acquired). Unlike the six layers above, it is **not a
+  scoring input**; it exists solely to precisely clip the restoration
+  grid's AOI, replacing the buffered bounding-hull approximation used
+  until it's acquired. Also not yet downloaded — an open action item, not
+  yet an Architecture blocker (see `spec/architecture.md` 2.2.1/FR-1.9).
 * The restoration-priority output is a **vector-based spatial grid**
   covering the AOI, with each cell scored 0 (low) to 10 (high). Grid cell
   size/resolution is explicitly **TBD**, an Architecture-phase decision
@@ -116,9 +125,11 @@ single-county extent, not statewide or regional.
 ### Out of Scope
 
 * Volunteer field report ingestion — no volunteer-submitted data source is
-  used; scope has settled on the six confirmed layers (trailheads, trail
-  segments, critical wildlife habitats, wildlife corridors, county roads,
-  synthetic moose sightings).
+  used; scope has settled on the six confirmed scoring/display layers
+  (trailheads, trail segments, critical wildlife habitats, wildlife
+  corridors, county roads, synthetic moose sightings), plus the
+  clipping-only county boundary polygon (seventh layer, not a scoring
+  input — see In Scope above).
 * Real-time or sub-weekly updates.
 * A mobile app or new field data collection tool.
 * Multi-tenant / multi-organization support — this is a single-org instance.
@@ -167,7 +178,9 @@ single-county extent, not statewide or regional.
   **Moose sightings** is **synthetic** (generated in-repo, see below),
   standing in for real wildlife-observation data that isn't available for
   this portfolio project. "Volunteer field reports," named in an earlier
-  draft of the Problem Statement/Goals, is confirmed **out of scope**.
+  draft of the Problem Statement/Goals, is confirmed **out of scope**. A
+  seventh, clipping-only **county boundary polygon** layer was confirmed
+  2026-07-24 (see Scope → In Scope) — also not yet downloaded.
 * Boulder County's Open Data portal runs on an **ArcGIS REST Services
   framework** (FeatureServer/MapServer query endpoints), not a flat-file
   host. Access details — anonymous vs. key-gated access, rate limits,
@@ -203,13 +216,16 @@ single-county extent, not statewide or regional.
 * Restoration-priority scoring is now defined at the mechanism level: a
   0–10 score computed per cell of a vector-based grid covering the AOI,
   driven by moose-sighting density and weighted up by proximity to (a)
-  critical wildlife habitats/corridors, (b) trails — access points for
-  restoration work, not just a correlation signal — and (c) roads —
-  logistics/access for restoration effort — with closer proximity
-  increasing weight for all three. Exact weight values/formula, and the
-  grid's cell size/resolution, remain **TBD**, to be finalized in
-  Architecture (weights possibly tuned further in Refinement). The
-  architecture must still support tuning these without major refactors.
+  critical wildlife habitats, (b) wildlife corridors — a distinct,
+  slightly-lower-weighted proximity factor from habitats, per the
+  consultant's 2026-07-24 input (see `spec/architecture.md` 2.4/5.1) — (c)
+  trails — access points for restoration work, not just a correlation
+  signal — and (d) roads — logistics/access for restoration effort — with
+  closer proximity increasing weight for all four. Exact weight values/
+  formula, and the grid's cell size/resolution, remain **TBD**, to be
+  finalized in Architecture (weights possibly tuned further in
+  Refinement). The architecture must still support tuning these without
+  major refactors.
 * Delivery follows a stepped approach: (1) a PoC proving the acquisition →
   spatial join → map pipeline end-to-end, (2) a fully integrated MVP, (3)
   incremental business-logic/scoring refinement layered on top of the MVP
@@ -241,16 +257,17 @@ factors into the technical constraints below.*
   Boulder-County-appropriate projection (e.g. a Colorado State Plane zone or
   UTM 13N), not a generic/global CRS; the specific EPSG code is an
   Architecture-phase decision.
-* Five of the six data layers (trailheads, trail segments, critical
-  wildlife habitats, wildlife corridors, county roads) are retrieved from
-  the Boulder County Open Data portal's ArcGIS REST Services framework
-  (FeatureServer/MapServer query endpoints) rather than a flat-file
-  download — the acquisition adapter for these sources is specifically an
-  ArcGIS REST Feature Service query client. Of these five, four
-  (trailheads, trail segments, critical wildlife habitats, wildlife
-  corridors) are already downloaded and in `data/raw/`; county roads is
-  confirmed as a source but its file has **not yet been acquired**. Its
-  access model (anonymous vs. key-gated, rate limits, `maxRecordCount`
+* Six of the seven data layers (trailheads, trail segments, critical
+  wildlife habitats, wildlife corridors, county roads, county boundary)
+  are retrieved from the Boulder County Open Data portal's ArcGIS REST
+  Services framework (FeatureServer/MapServer query endpoints) rather than
+  a flat-file download — the acquisition adapter for these sources is
+  specifically an ArcGIS REST Feature Service query client. Of these six,
+  four (trailheads, trail segments, critical wildlife habitats, wildlife
+  corridors) are already downloaded and in `data/raw/`; county roads and
+  the county boundary polygon are confirmed as sources but their files
+  have **not yet been acquired**. Their access model (anonymous vs.
+  key-gated, rate limits, `maxRecordCount`
   pagination, redistribution terms of use) is not yet investigated — see
   Open Questions; this blocks finalizing that adapter.
 * Remaining technical constraints not yet resolved: the ArcGIS REST access
@@ -288,18 +305,17 @@ mitigation recommendations during Requirements/Architecture.*
 * [ ] Who specifically needs access to the dashboard, and is any
       authentication/access control actually required, or is "small trusted
       internal audience" sufficient for v1?
-* [ ] **What grid cell size/resolution should the restoration-priority
-      scoring grid use?** An Architecture-phase decision, informed by AOI
-      size, data density, and the compute/cost tradeoff noted in Risks.
-      Blocks finalizing the grid-generation step and scoring compute
-      design.
 
 *Resolved by this revision (no longer open):* the restoration-priority
 scoring *mechanism* is now fixed — a 0–10 score per cell of a vector grid,
 driven by moose-sighting density and weighted by proximity to critical
-wildlife habitats/corridors, trails, and roads (closer = higher weight) —
-though exact weights/formula and grid resolution remain open items above;
-hosting is GCP under the consultant's personal account on the
+wildlife habitats, wildlife corridors, trails, and roads (closer = higher
+weight, habitat weighted marginally higher than corridors) — though exact
+weight *values* remain an Architecture/Refinement-tuned item (see
+`spec/architecture.md` 2.4); **grid cell size/resolution is confirmed as
+500 m, configurable** (consultant sign-off 2026-07-24, see
+`spec/architecture.md` 2.2); hosting is GCP under the consultant's
+personal account on the
 cheapest/free-tier option; the organization's existing tooling is assumed
 to be an ESRI-based dashboard being replaced; wildlife data sensitivity
 handling is out of scope since this is self-hosted by the consultant, not

@@ -86,6 +86,19 @@ Requirements are numbered `FR-n.n` / `NFR-n` for traceability into
   yet been downloaded/acquired** as of this writing — only its source is
   confirmed. This is an acquisition-status gap, not an open design
   question, and does not block finalizing the FR-1.5 adapter shape.
+* **FR-1.9** [Refinement] A **Boulder County boundary polygon**, confirmed
+  2026-07-24 as a seventh data layer, presumed to originate from the same
+  ArcGIS REST portal as the other six (to be verified when acquired). It
+  SHALL be retrieved via the same FR-1.5 adapter — no separate adapter
+  type required. Unlike FR-1.1–FR-1.8's layers, this one is **not a
+  scoring input** (FR-4.1 unaffected) — its sole purpose is precisely
+  clipping the FR-3.4 grid's AOI, replacing the buffered bounding-hull
+  approximation used until it's acquired (`spec/architecture.md` 2.2.1).
+  As of this writing it has **not yet been downloaded/acquired** — an
+  open action item, not a design question — and its acquisition is not a
+  gate for MVP sign-off (the hull-based AOI approximation is sufficient
+  for MVP; precise clipping is a Refinement-eligible improvement, per
+  Architecture Section 11).
 * The ArcGIS REST access model for the Boulder County portal (FR-1.5,
   which now covers all five county-sourced layers including roads) is
   **TBD** — pending investigation (`plan.md` Open Questions). "Volunteer
@@ -108,27 +121,29 @@ Requirements are numbered `FR-n.n` / `NFR-n` for traceability into
 * **FR-2.4** [MVP] Schema validation SHALL fail loudly and visibly (logged
   error, run marked failed/degraded) when a source's structure changes
   unexpectedly, rather than guessing or coercing silently.
-* **FR-2.5** — **Not applicable.** All six confirmed sources are
+* **FR-2.5** — **Not applicable.** All confirmed sources are
   coordinate-bearing GIS data: trailheads/trail segments/critical wildlife
-  habitats/wildlife corridors/county roads are GeoJSON from Boulder
-  County's ArcGIS REST portal (FR-1.5/FR-1.8), and synthetic moose
-  sightings are generated with coordinates by construction (FR-1.6). "Volunteer field reports" — the
-  only scenario that would have needed geocoding — is confirmed out of
-  scope. Retained here only for numbering continuity with the prior draft;
-  not a gate for any stage.
+  habitats/wildlife corridors/county roads/the county boundary polygon are
+  GeoJSON from Boulder County's ArcGIS REST portal (FR-1.5/FR-1.8/FR-1.9),
+  and synthetic moose sightings are generated with coordinates by
+  construction (FR-1.6). "Volunteer field reports" — the only scenario
+  that would have needed geocoding — is confirmed out of scope. Retained
+  here only for numbering continuity with the prior draft; not a gate for
+  any stage.
 
 ### FR-3 — Spatial Join / Analysis
 
 * **FR-3.1** [PoC] The system SHALL spatially join moose-sighting, trail
   (trailheads + segments), critical wildlife habitat, wildlife corridor,
   and road (FR-1.8) data into a single combined spatial dataset (e.g.,
-  proximity of sightings to habitat/corridors, trails, and roads).
+  proximity of sightings to habitat, corridors, trails, and roads).
   Critical wildlife habitat and wildlife corridor are two separate
-  physical layers that jointly feed the single FR-4.1 "habitat/corridor
-  proximity" scoring input. The PoC stage MAY demonstrate this against
-  whichever subset of layers is available at that point (per the PoC
-  acceptance criteria below); full four-input coverage is an MVP gate, not
-  a PoC gate.
+  physical layers that **each** feed their own FR-4.1 proximity scoring
+  input (revised 2026-07-24 — previously described as jointly feeding one
+  combined "habitat/corridor" input; see Architecture 5.1/2.4 for why they
+  were split). The PoC stage MAY demonstrate this against whichever subset
+  of layers is available at that point (per the PoC acceptance criteria
+  below); full five-input coverage is an MVP gate, not a PoC gate.
 * **FR-3.2** [PoC] Join output SHALL be written in an open, interoperable
   format (e.g., GeoParquet) suitable for direct dashboard consumption.
 * **FR-3.3** [MVP] The join SHALL be re-runnable idempotently against a
@@ -138,7 +153,7 @@ Requirements are numbered `FR-n.n` / `NFR-n` for traceability into
   covering the AOI (Boulder County), with cell size/resolution as a
   configurable parameter — the exact value is **TBD**, an Architecture-phase
   decision (see Open Items). Each grid cell SHALL be associated with the
-  moose-sighting density/traffic and habitat/corridor, trail, and road
+  moose-sighting density/traffic and habitat, corridor, trail, and road
   proximity information (FR-3.1) needed to compute its FR-4 score.
 
 ### FR-4 — Restoration-Priority Scoring
@@ -148,8 +163,14 @@ Requirements are numbered `FR-n.n` / `NFR-n` for traceability into
   using a simple, transparent, documented v1 heuristic — explicitly not a
   black-box or ML model. The score SHALL be driven by moose-sighting
   density/traffic in or near each cell, weighted up by:
-  - proximity to **critical wildlife habitats/corridors** (FR-3.1 habitat
-    layer) — closer = higher weight;
+  - proximity to **critical wildlife habitats** — closer = higher weight;
+  - proximity to **wildlife corridors** — closer = higher weight, weighted
+    *slightly* below habitat proximity (revised 2026-07-24, consultant
+    input — see Architecture Section 2.4/5.1: a designated critical
+    habitat with rising sighting density is judged a marginally higher
+    priority than a corridor, though corridors remain high-priority in
+    their own right, so the gap between the two weights is intentionally
+    small);
   - proximity to **trails** (FR-3.1 trailheads/trail-segments layer) —
     closer = higher weight, reflecting that trails serve as physical
     access points for restoration work, not just a correlation signal;
@@ -157,13 +178,20 @@ Requirements are numbered `FR-n.n` / `NFR-n` for traceability into
     weight, reflecting that roads serve as logistics/access for
     restoration effort.
 
-  This requirement fixes the score's *inputs* (sighting density,
-  habitat/corridor proximity, trail proximity, road proximity), the
+  Critical wildlife habitat and wildlife corridor are two separate
+  proximity inputs (each measured against its own layer), not one combined
+  "habitat/corridor" factor — this document originally treated them as
+  one; see Architecture 5.1 for why they were split.
+
+  This requirement fixes the score's *inputs* (sighting density, habitat
+  proximity, corridor proximity, trail proximity, road proximity), the
   *direction* of each proximity factor (closer = higher weight, for all
-  three), and the *output scale* (0–10 per grid cell). The exact weight
-  values and the formula combining these four inputs are intentionally
-  left to Architecture (an initial v1 weighting, to compute a working MVP
-  score) and Refinement (ongoing tuning), per `plan.md` — not fixed here.
+  four) and the *relative order* of the habitat/corridor pair (habitat
+  weighted marginally higher), and the *output scale* (0–10 per grid
+  cell). The exact weight values and the formula combining these five
+  inputs are intentionally left to Architecture (an initial v1 weighting,
+  to compute a working MVP score) and Refinement (ongoing tuning), per
+  `plan.md` — not fixed here.
 * **FR-4.2** [MVP] Scoring logic SHALL live in a single, clearly identified
   module/step, isolated from acquisition, ETL, and dashboard code, so it
   can be replaced or extended independently.
@@ -299,10 +327,11 @@ independently testable, per workspace SDD rules).
 * [ ] QA/validation flags bad records into an inspectable quarantine, per
       source, every run (FR-2.3, FR-7.1, FR-7.2).
 * [ ] A v1 restoration-priority scoring grid is computed (0–10 per cell,
-      driven by moose-sighting density weighted by proximity to
-      habitat/corridors, trails, and roads), documented, and shown on the
-      dashboard (FR-3.4, FR-4.1–FR-4.3, FR-5.2) — **blocked pending the
-      grid resolution Open Item below.**
+      driven by moose-sighting density weighted by proximity to habitat,
+      corridors, trails, and roads — habitat weighted marginally higher
+      than corridors), documented, and shown on the dashboard (FR-3.4,
+      FR-4.1–FR-4.3, FR-5.2) — **blocked pending the grid resolution Open
+      Item below.**
 * [ ] The full pipeline (acquisition → ETL → join → scoring → dashboard)
       runs automatically on a weekly schedule with no manual trigger
       (FR-6.1).
@@ -429,39 +458,42 @@ exactly what it can and can't finalize:
 2. **Who needs dashboard access, and whether any authentication is
    actually required.** Blocks: NFR-9, OR-5, and the first step of UW-1
    ("opens the dashboard URL" assumes no login — unconfirmed).
-3. **Grid cell size/resolution** for the FR-3.4 restoration-priority
-   scoring grid — an Architecture-phase decision, informed by AOI size,
-   data density, and the compute/cost tradeoff noted in `plan.md` Risks
-   (too coarse = not actionable; too fine = may exceed free-tier GCP
-   compute/cost budget, NFR-1). Blocks: finalizing FR-3.4 (grid
-   generation), FR-4.1 (per-cell scoring), and FR-5.2 (grid rendering).
 
-*Resolved since the prior draft (no longer open):* exact sources for all
-six layers (trailheads, trail segments, critical wildlife habitats,
-wildlife corridors, and county roads — all confirmed as GeoJSON/features
-from Boulder County's ArcGIS REST Open Data portal, sharing the FR-1.5
-adapter per FR-1.8); critical wildlife habitats and wildlife corridors are
-confirmed as **two separate, distinct in-scope layers**, not merged into
-one, both feeding the FR-4.1 habitat/corridor proximity scoring input;
-moose sightings confirmed as a synthetic, in-repo-generated dataset;
-whether trail data is GIS-native (yes — GeoJSON, not spreadsheet); the
-project AOI (Boulder County, Colorado, a single-county extent); "volunteer
-field reports" is confirmed **out of scope** (FR-2.5 marked not
-applicable, UW-3 removed); the synthetic generator's refresh cadence is
-confirmed — new points on every scheduled run (FR-1.6); the
-restoration-priority scoring *mechanism* is now fixed — a 0–10 score per
-grid cell, driven by moose-sighting density and weighted by proximity to
-habitat/corridors, trails, and roads (closer = higher weight for all
-three); and the county-roads layer's source is confirmed (same ArcGIS
-REST portal, same adapter) — though, unlike the other five layers, its
-GeoJSON file has **not yet been downloaded/acquired**. Only the exact
-weight values/formula (jointly with resolution, item 3 above) remain
-open.
+*Resolved since the prior draft (no longer open):* grid cell
+size/resolution (previously item 3 here) is confirmed as **500 m,
+configurable** (`GRID_CELL_SIZE_M`, consultant sign-off 2026-07-24 — see
+`spec/architecture.md` 2.2), unblocking FR-3.4/FR-4.1/FR-5.2; exact sources for all
+six scoring/display layers (trailheads, trail segments, critical wildlife
+habitats, wildlife corridors, and county roads — all confirmed as
+GeoJSON/features from Boulder County's ArcGIS REST Open Data portal,
+sharing the FR-1.5 adapter per FR-1.8); critical wildlife habitats and
+wildlife corridors are confirmed as **two separate, distinct in-scope
+layers**, not merged into one, **each now feeding its own FR-4.1 proximity
+scoring input** (revised 2026-07-24 — previously one combined
+habitat/corridor input; habitat is weighted marginally higher than
+corridor, see Architecture 2.4/5.1); moose sightings confirmed as a
+synthetic, in-repo-generated dataset; whether trail data is GIS-native
+(yes — GeoJSON, not spreadsheet); the project AOI (Boulder County,
+Colorado, a single-county extent); "volunteer field reports" is confirmed
+**out of scope** (FR-2.5 marked not applicable, UW-3 removed); the
+synthetic generator's refresh cadence is confirmed — new points on every
+scheduled run (FR-1.6); the restoration-priority scoring *mechanism* is
+now fixed — a 0–10 score per grid cell, driven by moose-sighting density
+and weighted by proximity to habitat, corridors, trails, and roads (closer
+= higher weight for all four, habitat highest among the four); the
+county-roads layer's source is confirmed (same ArcGIS REST portal, same
+adapter) — though, unlike the other five layers, its GeoJSON file has
+**not yet been downloaded/acquired**; and a **seventh, clipping-only
+Boulder County boundary layer** (FR-1.9) is newly confirmed (2026-07-24,
+Refinement-tagged, not an MVP gate), also not yet acquired. Only the exact
+scoring weight values/formula remain open — the grid resolution parameter
+itself is decided (500 m default, still tunable).
 
-Neither remaining item blocks starting Architecture — the requirements
-above are written to hold regardless of how they resolve — but both should
-be confirmed/decided before Architecture finalizes the dashboard's access
-model (item 2) and the FR-3.4/FR-4.1 grid implementation (item 3).
+Neither remaining item (1, 2 above) blocks starting Architecture — the
+requirements above are written to hold regardless of how they resolve —
+but both should be confirmed/decided before Architecture finalizes the
+ArcGIS adapter's access parameters (item 1) and the dashboard's access
+model (item 2).
 
 ---
 

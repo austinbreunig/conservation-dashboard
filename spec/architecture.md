@@ -1,6 +1,6 @@
 # Architecture
 
-Status: drafted — Phase 4, pending Captain sign-off (per `playbook/project-init.md`).
+Status: signed off — Phase 4 complete, 2026-07-24 (per `playbook/project-init.md`).
 
 Derived from `plan.md` (signed off) and `spec/requirements.md` (signed off,
 Phase 3 complete). Requirement IDs (`FR-n.n` / `NFR-n` / `OR-n` / `UW-n`)
@@ -29,6 +29,7 @@ See "Decisions Made in This Phase" and "Open Items Designed Around" below.
 | Dashboard hosting | **Cloud Run service** (scale-to-zero) | Free tier covers low internal traffic; IAM toggle gives a no-rework path to auth later. |
 | Dashboard framework | **Streamlit** (+ Folium/PyDeck for the map) | Solo-consultant maintainability (NFR-2); alternative (Dash/FastAPI+MapLibre) noted as a non-blocking swap. |
 | Adapter model | Generic `SourceAdapter` protocol; one **ArcGIS REST** adapter class parameterized per layer, one **Synthetic** adapter class | New county layer = new config entry, not new code (NFR-7). |
+| Dashboard data reads | Always fresh — no `@st.cache_data`; only **`@st.cache_resource`** around the DuckDB connection (per-instance, not per-data) | Correctness never depended on caching (only the weekly job changes `current/`), and cold starts bypass a TTL cache anyway — a data cache bought little and introduced avoidable failure modes. Simplified 2026-07-24. |
 
 ---
 
@@ -77,11 +78,19 @@ before proximity/grid math (FR-3.4, FR-4.1). Reprojection back to
 EPSG:4326 happens only at the dashboard's final rendering boundary (most
 web map libraries expect lon/lat).
 
-*Judgment call — flagged for sign-off:* this is a defensible, standard
-choice, not an authoritative one; either candidate satisfies NFR-5's "an
-explicit, documented EPSG code" requirement. Worth a quick sanity check if
-the consultant has a strong preference (e.g. matching whatever CRS Boulder
-County's own GIS department publishes analysis in).
+**Resolved (2026-07-24) — no, an EPSG:3857 (Web Mercator, the "Google
+Mercator" projection) reprojection step is not needed in this
+architecture.** Web Mercator is what Leaflet/Folium (and Mapbox GL,
+Google Maps) use *internally* to project the globe onto flat, square
+map tiles for on-screen rendering — but that projection happens inside
+the map library at render time, not in this codebase. Folium/PyDeck both
+take lon/lat (EPSG:4326) as their input coordinate format and handle the
+Web Mercator tiling themselves. So the reprojection chain stays exactly
+as designed: **EPSG:26913 (meters)** for every backend spatial
+operation → **EPSG:4326 (lon/lat)** only at the dashboard boundary, handed
+to Folium/PyDeck → whatever Web Mercator tiling the map widget does
+internally from there is invisible to (and none of the concern of) this
+architecture.
 
 ### 2.2 Grid Cell Size — 500 m default, configurable
 
@@ -111,10 +120,10 @@ tunability requirement. Revisiting resolution in Refinement requires only
 changing this constant and re-deriving the cached grid (Section 5.1) — no
 code change.
 
-*Judgment call — flagged for sign-off:* this is an initial, reasoned
-default, not a measured optimum; 250 m is the natural next step to try in
-Refinement if 500 m proves too coarse for field decisions, and remains
-cheap (≈31,000 cells).
+**Confirmed (2026-07-24):** 500 m as a *configurable default*, not a
+hardcoded fixed value — matches the design above exactly (`GRID_CELL_SIZE_M`
+is already a named, tunable constant). No architecture change needed;
+noted here as an explicit sign-off on this specific decision.
 
 #### 2.2.1 AOI boundary note
 
@@ -133,6 +142,22 @@ likely also publishes an official county-boundary layer; fetching it would
 use the *same* ArcGIS REST adapter (just another layer id) and let the
 grid be clipped precisely to the county — a natural Refinement-stage
 addition, not an architecture change.
+
+**Resolved (2026-07-24):** the consultant confirmed this is worth
+acquiring — a **Boulder County boundary polygon** is now a confirmed
+seventh data layer, source presumed to be the same ArcGIS REST Open Data
+portal as the other six (to be verified when acquired, per Section 3.1's
+"discover, don't hardcode" adapter posture). Acquisition is an open action
+item on the consultant's end — not yet downloaded, mirroring how county
+roads was carried before its file arrived (5.1). Unlike the six
+scoring/display layers, this layer is **clipping-only**: it does not feed
+`dist_habitat_m`/`dist_corridor_m`/`dist_trail_m`/`dist_road_m` or
+`sighting_count` (Section 2.4) — its sole role is precisely bounding the
+AOI hull described above. It uses the existing `ArcGISRestAdapter` class
+(one new config entry, zero new code, per FR-1.3/NFR-7) and, once
+acquired, replaces the buffered bounding-hull AOI with a precise clip — no
+architecture change, exactly the extension point already described in
+Section 11.
 
 ### 2.3 Storage & Query Layer — GeoParquet on GCS + DuckDB (spatial), not PostGIS
 
@@ -181,7 +206,11 @@ retune it.
   (default = half the cell size, 250 m) to smooth sparse point data across
   discrete cells.
 * `dist_habitat_m` — distance from the cell centroid to the nearest
-  critical-habitat/corridor feature.
+  **critical wildlife habitat** feature (own layer, not unioned with
+  corridors — revised 2026-07-24, see 5.1).
+* `dist_corridor_m` — distance from the cell centroid to the nearest
+  **wildlife corridor** feature (own layer, separate weight from habitat —
+  revised 2026-07-24, see 5.1).
 * `dist_trail_m` — distance from the cell centroid to the nearest feature
   among trailheads ∪ trail segments.
 * `dist_road_m` — distance from the cell centroid to the nearest road
@@ -209,46 +238,55 @@ zero by `max_dist`." Default `max_dist` per layer (config, tunable):
 
 | Layer | `max_dist` default | Why |
 | --- | --- | --- |
-| Habitat/corridor | 1,500 m | Habitat/corridor influence is treated as relevant over a wider radius than a single trail or road. |
+| Critical wildlife habitat | 1,500 m | Habitat influence is treated as relevant over a wider radius than a single trail or road. |
+| Wildlife corridor | 1,500 m | Same radius rationale as habitat — corridors are a landscape-scale feature, not a point one. |
 | Trail | 800 m | Trails are relatively dense in Boulder County's open-space network; a tighter radius keeps the signal local. |
 | Road | 800 m | Same rationale as trails — road access relevance is local, not county-wide. |
 
-**Combined score:**
+**Combined score** — *revised 2026-07-24* to weight critical wildlife
+habitat and wildlife corridor proximity separately (previously one
+combined `W_HABITAT` term over a unioned distance; see 5.1 for why):
 
 ```
 score_0_10 = 10 * density_norm * (
-    W_BASE     * 1.0
-  + W_HABITAT  * proximity_habitat
-  + W_TRAIL    * proximity_trail
-  + W_ROAD     * proximity_road
+    W_BASE      * 1.0
+  + W_HABITAT   * proximity_habitat
+  + W_CORRIDOR  * proximity_corridor
+  + W_TRAIL     * proximity_trail
+  + W_ROAD      * proximity_road
 )
 ```
-with `W_BASE + W_HABITAT + W_TRAIL + W_ROAD = 1.0`. Defaults:
+with `W_BASE + W_HABITAT + W_CORRIDOR + W_TRAIL + W_ROAD = 1.0`. Defaults:
 
 | Weight | Value | Rationale |
 | --- | --- | --- |
-| `W_BASE` | 0.40 | A cell with real sighting density always earns *some* priority, even far from any of the three proximity features — density is the primary driver per FR-4.1, not an equal fourth factor. |
-| `W_HABITAT` | 0.25 | Habitat/corridor proximity gets the largest proximity boost — restoration for wildlife benefit is the project's core purpose (`plan.md` Problem Statement). |
-| `W_TRAIL` | 0.20 | Trails are explicitly access points for restoration work (FR-4.1), not just correlation — second-highest boost. |
-| `W_ROAD` | 0.15 | Roads matter for logistics/access but are the least direct restoration-outcome driver of the three. |
+| `W_BASE` | 0.40 | A cell with real sighting density always earns *some* priority, even far from any of the four proximity features — density is the primary driver per FR-4.1, not an equal factor. |
+| `W_HABITAT` | 0.14 | Critical-wildlife-habitat proximity gets the largest single proximity boost — restoration for wildlife benefit is the project's core purpose (`plan.md` Problem Statement), and a cell already inside/near a *designated critical* habitat where sighting density is climbing is judged the single highest-priority signal. |
+| `W_CORRIDOR` | 0.11 | Corridor proximity is weighted just below habitat — corridors remain a high restoration priority (they connect habitat patches), but a formally designated critical habitat is judged a slightly stronger signal than a connective corridor. The gap is deliberately small (0.03) — this is a tiebreaker between two related priorities, not a statement that corridors matter much less. `W_HABITAT + W_CORRIDOR = 0.25`, unchanged from the prior combined term, so this split doesn't shift total habitat-family weight relative to trails/roads — it only redistributes *within* that family. |
+| `W_TRAIL` | 0.20 | Trails are explicitly access points for restoration work (FR-4.1), not just correlation — second-highest single-factor boost. |
+| `W_ROAD` | 0.15 | Roads matter for logistics/access but are the least direct restoration-outcome driver of the four. |
 
 This is deliberately a straight-line formula a non-technical reader can
 follow: *no sightings → 0; sightings alone → up to 4; sightings right next
-to habitat, a trail, and a road → up to 10.* `score_0_10` is clamped to
-`[0, 10]` defensively.
+to habitat, a corridor, a trail, and a road → up to 10.* `score_0_10` is
+clamped to `[0, 10]` defensively.
 
 **Worked example** (illustrates FR-4.3's "how is this calculated" note):
-a cell with 3 sightings (`density_norm = 3/5 = 0.6`), 400 m from habitat
-(`proximity_habitat = 1 - 400/1500 = 0.73`), 200 m from a trail
-(`proximity_trail = 1 - 200/800 = 0.75`), 1,000 m from a road
+a cell with 3 sightings (`density_norm = 3/5 = 0.6`), 400 m from critical
+habitat (`proximity_habitat = 1 - 400/1500 = 0.73`), 900 m from the
+nearest corridor (`proximity_corridor = 1 - 900/1500 = 0.40`), 200 m from
+a trail (`proximity_trail = 1 - 200/800 = 0.75`), 1,000 m from a road
 (`proximity_road = 0`, beyond `max_dist`):
-`score = 10 * 0.6 * (0.40 + 0.25*0.73 + 0.20*0.75 + 0.15*0) = 10 * 0.6 * 0.7325 ≈ 4.4`.
+`score = 10 * 0.6 * (0.40 + 0.14*0.73 + 0.11*0.40 + 0.20*0.75 + 0.15*0) = 10 * 0.6 * 0.7062 ≈ 4.2`.
 
 *Judgment call — flagged for sign-off:* every weight and distance constant
 above is a first-pass, defensible-but-invented heuristic per FR-4.1's
 explicit instruction ("intentionally left to Architecture... Refinement").
-None of it should be read as validated conservation science — it is the
-transparent starting point FR-4.3/FR-4.4 require.
+The habitat/corridor split and its specific 0.14/0.11 values are the
+consultant's explicit input (2026-07-24); everything else here remains an
+architecture-proposed starting point. None of it should be read as
+validated conservation science — it is the transparent starting point
+FR-4.3/FR-4.4 require.
 
 ### 2.5 Synthetic-Data Disclosure — carried as a data-model field, not just a UI label
 
@@ -384,27 +422,29 @@ per NFR-7. "Stage" marks when it must first exist.
 
 ### 5.1 Source Adapters — `src/acquisition/` — [PoC: 1 adapter] [MVP: all]
 
-* **`ArcGISRestAdapter`** (FR-1.5, FR-1.8) — one reusable class,
-  instantiated five times (trailheads, trail segments, critical wildlife
-  habitats, wildlife corridors, county roads) via config
-  (`config/sources.yaml`), not five separate classes. Handles
-  pagination/retry/auth per Section 3.1. Of these five, four (trailheads,
+* **`ArcGISRestAdapter`** (FR-1.5, FR-1.8, FR-1.9) — one reusable class,
+  instantiated six times (trailheads, trail segments, critical wildlife
+  habitats, wildlife corridors, county roads, county boundary) via config
+  (`config/sources.yaml`), not six separate classes. Handles
+  pagination/retry/auth per Section 3.1. Of these six, four (trailheads,
   trail segments, critical wildlife habitats, wildlife corridors) already
-  have downloaded GeoJSON in `data/raw/`; county roads is confirmed as a
-  source but its file/endpoint has not yet been acquired — this affects
-  only when that specific config entry can be exercised end-to-end, not
-  the adapter class's design.
+  have downloaded GeoJSON in `data/raw/`; county roads and the county
+  boundary polygon are confirmed as sources but their files/endpoints have
+  not yet been acquired — this affects only when those specific config
+  entries can be exercised end-to-end, not the adapter class's design.
 * **`SyntheticMooseSightingsAdapter`** (FR-1.6) — generates a fresh
   GeoDataFrame of points within the AOI on every run; deterministic seed
   is *not* used by default (each run should look like "new" sightings per
   FR-1.6), but the adapter accepts an optional seed for test
   reproducibility.
 * Both conform to the same `SourceAdapter` protocol (Section 6.1) — this
-  is the concrete mechanism behind FR-1.2/FR-1.3/NFR-7: adding a seventh
-  source means adding either a new `ArcGISRestAdapter` config entry (zero
-  code) or, for a genuinely new access pattern (e.g. a CSV download), one
-  new adapter class implementing the same protocol — never modifying an
-  existing adapter or any downstream module.
+  is the concrete mechanism behind FR-1.2/FR-1.3/NFR-7: the county
+  boundary layer just added above is a live demonstration of it (a config
+  entry, zero code), and the same holds for any future source — a new
+  `ArcGISRestAdapter` config entry (zero code) or, for a genuinely new
+  access pattern (e.g. a CSV download), one new adapter class implementing
+  the same protocol — never modifying an existing adapter or any
+  downstream module.
 
 *Habitat/corridor layer — confirmed, no longer an open question:*
 `data/raw/` contains **two** GeoJSON files — `boco_critical_wildlife_habitats.geojson`
@@ -413,24 +453,68 @@ flagged for sign-off whether both were in scope as the FR-4.1
 "habitat/corridor" input. The consultant has confirmed **both layers are
 in scope as two separate, distinct physical layers/adapters** — critical
 wildlife habitats is not merged into wildlife corridors or vice versa.
-Both feed the single *logical* FR-4.1 "habitat/corridor proximity"
-scoring input (`dist_habitat_m` is computed as distance to the nearest
-feature across the union of both layers). This brings the total confirmed
-data-layer count to **six**: trailheads, trail segments, critical
-wildlife habitats, wildlife corridors, county roads, and synthetic moose
-sightings.
+This brings the total confirmed scoring/display data-layer count to
+**six**: trailheads, trail segments, critical wildlife habitats, wildlife
+corridors, county roads, and synthetic moose sightings. (A seventh,
+clipping-only Boulder County boundary layer is also now confirmed — see
+2.2.1 — but it is not a scoring input.)
+
+**Revised (2026-07-24):** the consultant asked that critical wildlife
+habitats be weighted slightly higher than wildlife corridors — the
+rationale being that a habitat already known to be critical, where
+sightings are increasing, is a *slightly* higher priority signal than a
+corridor, while corridors remain high-priority and should stay close
+behind, not be discounted. This changes the scoring model from a single
+combined "habitat/corridor proximity" input to two distinct proximity
+inputs, each computed against its own layer rather than the union of
+both — `dist_habitat_m` (nearest critical-wildlife-habitat feature) and
+`dist_corridor_m` (nearest wildlife-corridor feature), each with its own
+weight (`W_HABITAT` slightly above `W_CORRIDOR`). See the revised formula
+in Section 2.4.
 
 ### 5.2 Normalize / Validate — `src/etl/normalize.py` — [PoC]
 
 Reprojects to EPSG:26913 (2.1), adds standard columns
 (`source_name`, `source_type`, `ingested_at`, `run_id`), validates
-geometry (drops/repairs invalid geometries per a documented rule),
-checks against a small per-source expected-schema manifest (FR-2.4),
-and routes bad records to `quarantine/` rather than dropping them
-(FR-2.3, FR-7.2). Runs identically regardless of which adapter produced
-the input — normalize does not know or care whether a record came from
-ArcGIS REST or the synthetic generator, beyond the `source_type` value
-already stamped on it.
+geometry, checks against a small per-source expected-schema manifest
+(FR-2.4), and routes bad records to `quarantine/` rather than dropping
+them (FR-2.3, FR-7.2). Runs identically regardless of which adapter
+produced the input — normalize does not know or care whether a record
+came from ArcGIS REST or the synthetic generator, beyond the
+`source_type` value already stamped on it.
+
+**Extended (2026-07-24) — geometry validation as a pluggable rule
+pipeline, not a single drop/repair step.** The consultant wants room to
+grow this beyond invalid-geometry repair without it becoming a monolith.
+Geometry validation is structured as an ordered list of small, independently
+testable **geometry rules**, each a plain function
+`(geometry) -> geometry | None` (returning `None` routes the record to
+`quarantine/` with the rule name as the reason), applied in sequence per
+record:
+
+1. **`repair_invalid`** [PoC] — the existing drop/repair behavior (e.g.
+   `shapely.make_valid`/buffer(0)); unchanged from the original design,
+   just now the first rule in the pipeline rather than the whole step.
+2. **`simplify(tolerance=GEOMETRY_SIMPLIFY_TOLERANCE)`** [MVP] — reduces
+   vertex precision via `shapely.simplify`, default tolerance **1e-5**
+   (in EPSG:26913 units, i.e. ~0.01 mm — deliberately tiny; this exists to
+   collapse redundant/near-duplicate vertices and trim floating-point noise
+   from the ArcGIS REST source, not to visibly coarsen geometry). Config-set
+   like `GRID_CELL_SIZE_M`, so it can be loosened later without code change.
+3. **`enforce_winding_order`** [Refinement, stubbed now] — normalizes
+   exterior/interior ring winding (counter-clockwise exterior, clockwise
+   holes, per the GeoJSON RFC 7946 convention) so downstream consumers that
+   assume a winding order never silently break. Not required by any
+   current MVP consumer (GeoPandas/DuckDB spatial tolerate either winding),
+   but the pipeline shape holds a slot for it now rather than requiring a
+   refactor to add it later.
+
+Each rule is independently addable/removable/reorderable (NFR-7) — adding
+rule 4 (e.g. a minimum-vertex-count check, self-intersection detection)
+means writing one new function and appending it to the pipeline list, not
+modifying `normalize.py`'s control flow. A record that fails any rule is
+quarantined with that rule's name attached, so FR-7.1's QA summary can
+report *which* check caught it, not just that something failed.
 
 ### 5.3 Spatial Join + Grid Generation — `src/etl/grid.py` — [PoC: join only] [MVP: + grid]
 
@@ -438,7 +522,8 @@ already stamped on it.
   (FR-3.1), written as GeoParquet (FR-3.2).
 * MVP: generates (or loads a cached) fishnet grid at
   `GRID_CELL_SIZE_M` over the AOI (2.2.1), spatially joins sighting
-  counts and nearest-distance-to-habitat/trail/road per cell (FR-3.4).
+  counts and nearest-distance-to-habitat/corridor/trail/road per cell
+  (FR-3.4).
   The grid is cached under `reference/grid_<cell_size>.geoparquet`,
   keyed by a hash of the AOI + resolution config, so changing
   `GRID_CELL_SIZE_M` produces a new cached grid rather than silently
@@ -454,7 +539,8 @@ Pure function(s) implementing Section 2.4, reading `grid_features` +
 `config/scoring.yaml` (weights, caps, decay distances), writing
 `scoring_grid.geoparquet` with the final `score_0_10` **and** the
 intermediate per-component columns (`density_norm`,
-`proximity_habitat`, `proximity_trail`, `proximity_road`) so the
+`proximity_habitat`, `proximity_corridor`, `proximity_trail`,
+`proximity_road`) so the
 dashboard's methodology note can show real numbers, not just the
 output (NFR-6). Isolated from acquisition/ETL/dashboard code (FR-4.2)
 — it only depends on the `grid_features` schema, so it can be replaced
@@ -491,6 +577,48 @@ roads, FR-5.2), the labeled synthetic moose-sightings layer (2.5),
 plain-language "how is this calculated" note (FR-4.3) driven by the
 same `config/scoring.yaml` values used to compute the score — so the
 documentation can't drift out of sync with the actual formula.
+
+**Data reads (simplified 2026-07-24 — no `@st.cache_data`).** Every
+dashboard request reads `current/*.geoparquet` and
+`current/run_manifest.json` directly, fresh, every time. An earlier
+draft of this section added a `@st.cache_data(ttl=3600)` layer to avoid
+re-reading GCS on repeat views; the consultant flagged it as solving a
+problem the project doesn't have, and that flag was correct:
+
+* Correctness never depended on caching — `current/*.geoparquet` is
+  only ever overwritten by the weekly pipeline job (5.6), so *any*
+  request, cached or not, can never show data older than the last
+  successful run. A TTL only ever controlled how often a warm instance
+  re-touched GCS to re-serve views of data that hadn't changed — a
+  performance knob, not a correctness one.
+* That performance knob wasn't buying much here. Cloud Run's
+  scale-to-zero (min instances 0) means most visits hit a cold start
+  anyway, which bypasses any data cache regardless of TTL — and even a
+  fully fresh read is inexpensive (Section 2.3): a columnar Parquet
+  scan over a ~7,700-cell grid, not a database reinitialization.
+* Dropping the cache also removes the failure modes it would have
+  introduced for no offsetting benefit: the "last updated" timestamp
+  and the scoring grid can no longer drift out of sync with each other
+  (both are just read fresh, together, every time); an out-of-cadence
+  manual pipeline run (FR-1.4, 5.6) is reflected on the very next
+  request with no TTL to wait out; and multiple concurrent Cloud Run
+  instances can no longer disagree about "current," since none of them
+  are holding onto a stale cached copy. None of these needed a
+  mitigation — they needed the cache removed.
+
+The one piece of the earlier caching design that's kept: the DuckDB
+connection itself is still opened once per container instance via a
+function wrapped in `@st.cache_resource` (a connection is a reusable
+resource, not data that can go stale — keeping it just avoids
+reopening the GCS-backed file on every rerun within a warm instance,
+at no cost to freshness). Because `@st.cache_resource` is
+process-global, the query function calls `.cursor()` on the cached
+connection at the top of each request rather than querying the shared
+connection object directly — free, and avoids relying on undocumented
+thread-safety for concurrent DuckDB queries from more than one
+session at once. Cold starts always begin with an empty connection
+cache and open a fresh one; this is expected and inexpensive for the
+same reason a fresh data read is.
 
 ---
 
@@ -536,7 +664,11 @@ The dashboard reads GeoParquet objects from the `current/` GCS prefix via
 DuckDB's `httpfs`/GCS support (or `gcsfs` + GeoPandas as a fallback). No
 separate internal API service sits between the dashboard container and
 storage — introducing one would be an unjustified layer for a
-single-reader, low-traffic dashboard (Wu Wei).
+single-reader, low-traffic dashboard (Wu Wei). Every request reads
+through to GCS (Section 5.7) — no data cache to keep in sync with
+`current/`'s actual contents. Only the DuckDB connection itself is
+reused across requests within a warm instance (`@st.cache_resource`);
+the Parquet and manifest data behind it are always read fresh.
 
 ---
 
@@ -664,8 +796,8 @@ required for v1"):
   public-land parcels or varying resolution by data density; a candidate
   Refinement-stage idea, not a v1 need.
 * **Multiple adapter classes per ArcGIS layer** — one parameterized
-  `ArcGISRestAdapter` class handles all five county-sourced layers via
-  config, not five near-duplicate classes.
+  `ArcGISRestAdapter` class handles all six county-sourced layers via
+  config, not six near-duplicate classes.
 * **Active failure alerting (email/SMS)** — FR-6.3/OR-3 explicitly defer
   this to Refinement; the manifest-driven staleness signal is sufficient
   for MVP sign-off.
@@ -687,7 +819,10 @@ required for v1"):
   Identity-Aware Proxy in front of the existing service; no app code
   change (3.2).
 * **County boundary precision** — add the county's own boundary layer via
-  the existing ArcGIS adapter and clip the cached grid to it (2.2.1).
+  the existing ArcGIS adapter and clip the cached grid to it (2.2.1). No
+  longer purely speculative: the layer itself is now confirmed (2.2.1),
+  acquisition pending on the consultant's end; this bullet now describes a
+  scheduled near-term addition rather than a hypothetical one.
 * **Move to PostGIS if ever justified** — because the system of record is
   open GeoParquet, a future PostGIS layer could be populated from it
   without redesigning acquisition/ETL/scoring; not needed at current
