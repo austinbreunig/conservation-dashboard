@@ -23,13 +23,17 @@ import numpy as np
 
 from .base import RunContext
 
-# Union bounding box (lon/lat, WGS84) of the four ArcGIS-sourced layers
-# already in data/raw/ (trailheads, trail segments, critical wildlife
-# habitats, wildlife corridors), rounded outward slightly. This is a
-# simple PoC stand-in for the buffered-bounding-hull AOI architecture 2.2.1
-# describes -- the real hull-based AOI is grid/scoring (M2, T2.8) machinery
-# this adapter doesn't need.
-BOULDER_COUNTY_AOI_BBOX_4326 = (-105.70, 39.90, -105.00, 40.30)  # (minx, miny, maxx, maxy)
+# Deliberately narrowed west-("mountain-side")-county bbox (lon/lat, WGS84)
+# -- a PR-review-requested subset of the four ArcGIS-sourced layers' union
+# bbox (trailheads, trail segments, critical wildlife habitats, wildlife
+# corridors), not the full union itself. Restraining synthetic moose
+# sightings to western Boulder County keeps them in the mountainous terrain
+# moose plausibly occupy. This is a simple PoC stand-in for the
+# buffered-bounding-hull AOI architecture 2.2.1 describes -- the real
+# hull-based AOI is grid/scoring (M2, T2.8) machinery this adapter doesn't
+# need.
+# (minx, miny, maxx, maxy)
+BOULDER_COUNTY_AOI_BBOX_4326 = (-105.70000, 39.90000, -105.32318, 40.25857)
 
 DEFAULT_N_POINTS = 40
 
