@@ -69,6 +69,7 @@ class ArcGISRestAdapter:
         backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
         request_delay_s: float = DEFAULT_REQUEST_DELAY_S,
         session: requests.Session | None = None,
+        outfields: list[str] | None = None,
     ):
         self.name = name
         self.service_url = service_url.rstrip("/")
@@ -83,6 +84,11 @@ class ArcGISRestAdapter:
         # the only reason this is a constructor param rather than a purely
         # internal `requests.get(...)` implementation detail.
         self._session = session or requests.Session()
+        # Optional per-layer field restriction (config/sources.yaml's
+        # `outfields` key). None/empty falls back to requesting every field
+        # ("*") in fetch() below -- keeping source fields flexible per-layer
+        # without requiring every config entry to specify them.
+        self.outfields = outfields
 
     @property
     def _layer_url(self) -> str:
@@ -140,7 +146,7 @@ class ArcGISRestAdapter:
                 query_url,
                 {
                     "where": "1=1",
-                    "outFields": "*",
+                    "outFields": ",".join(self.outfields) if self.outfields else "*",
                     "f": "geojson",
                     "resultRecordCount": max_record_count,
                     "resultOffset": offset,

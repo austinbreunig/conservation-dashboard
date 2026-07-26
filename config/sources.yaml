@@ -29,7 +29,18 @@
 #                   when the live portal is unreachable (data/raw/ is
 #                   git-ignored -- see .gitignore -- so this path may not
 #                   exist in every checkout; src/pipeline/run.py handles
-#                   that case).
+#                   that case). NOTE: these local snapshots were downloaded
+#                   with every field present, so they may be a superset of
+#                   whatever `outfields` (below) requests from the live
+#                   portal -- that's expected/safe, not a bug, since
+#                   `outfields` only restricts the live fetch, not the
+#                   fixture.
+#   outfields      Optional list of field names to request from the layer
+#                   (passed through to ArcGISRestAdapter's `outfields`
+#                   constructor arg, joined into a comma-separated
+#                   `outFields` query param). Keeps per-source fields
+#                   flexible without adapter code changes (NFR-7). When
+#                   absent, the adapter requests every field (`outFields=*`).
 #   notes          Free text; used below to record what T1.7's live
 #                   investigation did/didn't confirm for this specific
 #                   entry.
@@ -48,6 +59,7 @@ sources:
     service_url: https://maps.bouldercounty.org/arcgis/rest/services/ParksOpenSpace/OP_BCPOS_TRAILHEADS/MapServer
     layer_id: 0
     local_fixture: data/raw/boco_trailheads.geojson
+    outfields: [TrailheadName, Location, LocationDescription, id]
     notes: >
       Confirmed live 2026-07-24 (T1.7/T1.8): anonymous access, 38
       features, maxRecordCount=1000, schema/feature-count parity with
@@ -81,6 +93,7 @@ sources:
     service_url: https://maps.bouldercounty.org/arcgis/rest/services/PLANNING/BCCP_CriticalWildlifeHabitats/MapServer
     layer_id: 0
     local_fixture: data/raw/boco_critical_wildlife_habitats.geojson
+    outfields: [Acres, Description, CritWildId, Name]
     notes: >
       Confirmed live 2026-07-24 (T1.7): anonymous access, 77 features,
       maxRecordCount=1000, matches data/raw/boco_critical_wildlife_habitats.geojson's
@@ -94,6 +107,7 @@ sources:
     service_url: https://maps.bouldercounty.org/arcgis/rest/services/PLANNING/BCCP_WildlifeMigrationCorridors/FeatureServer
     layer_id: 0
     local_fixture: data/raw/boco_wildlife_corridors.geojson
+    outfields: [Description, CritWildId, Name, Acres]
     notes: >
       Confirmed live 2026-07-24 (T1.7): anonymous access, 3 features,
       maxRecordCount=2000, matches data/raw/boco_wildlife_corridors.geojson's

@@ -233,6 +233,51 @@ def test_uses_api_key_as_token_param_when_configured():
     assert all(call["params"].get("token") == "secret-key" for call in session.calls)
 
 
+def test_outfields_configured_sends_comma_joined_out_fields_param():
+    """config/sources.yaml's optional `outfields` key (PR #1 review comment)
+    lets a source restrict which fields it requests instead of always
+    pulling every field.
+
+    This test checks that when `outfields` is configured, every query
+    call's `outFields` param is a comma-joined string of those field names
+    -- not the `"*"` wildcard.
+    """
+    responses = [
+        _FakeResponse(200, {"maxRecordCount": 1000}),
+        _FakeResponse(200, {"features": [_point_feature(1, -105.3, 40.0)]}),
+    ]
+    session = _FakeSession(responses)
+    adapter = _adapter(session, outfields=["TrailheadName", "Location", "id"])
+    ctx = RunContext(run_id="test-run-001")
+
+    adapter.fetch(ctx)
+
+    query_call = session.calls[1]
+    assert query_call["params"]["outFields"] == "TrailheadName,Location,id"
+
+
+def test_outfields_omitted_defaults_out_fields_param_to_wildcard():
+    """Same fallback behavior, other direction: when `outfields` is not
+    configured (None, the default), the adapter must preserve the existing
+    behavior of requesting every field via `outFields=*`.
+
+    This test checks that a query call's `outFields` param is `"*"` when
+    no `outfields` was passed to the constructor.
+    """
+    responses = [
+        _FakeResponse(200, {"maxRecordCount": 1000}),
+        _FakeResponse(200, {"features": [_point_feature(1, -105.3, 40.0)]}),
+    ]
+    session = _FakeSession(responses)
+    adapter = _adapter(session)
+    ctx = RunContext(run_id="test-run-001")
+
+    adapter.fetch(ctx)
+
+    query_call = session.calls[1]
+    assert query_call["params"]["outFields"] == "*"
+
+
 @pytest.mark.skipif(
     not TRAILHEADS_LOCAL_FIXTURE.exists(),
     reason=(

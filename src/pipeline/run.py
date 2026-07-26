@@ -79,6 +79,7 @@ def fetch_trailheads(run_context: RunContext, config: dict) -> gpd.GeoDataFrame:
         name=entry["name"],
         service_url=entry["service_url"],
         layer_id=entry["layer_id"],
+        outfields=entry.get("outfields"),
     )
     try:
         return adapter.fetch(run_context)
