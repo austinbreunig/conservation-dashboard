@@ -1,11 +1,9 @@
 # Tasks
 
-Status: **draft — pending Captain sign-off** (Phase 5, per
-`playbook/project-init.md`). Implementation is **gated** on this document
-being reviewed and signed off, exactly as `plan.md` → `spec/requirements.md`
-→ `spec/architecture.md` were each gated before the next phase began. No
-task below should be started until that sign-off happens and Phase 6
-(Implementation Readiness Review) completes.
+Status: **signed off — Phase 5 complete, 2026-07-24** (per
+`playbook/project-init.md`). Captain authorized implementation of
+Milestone 1 (PoC, T1.1–T1.12) via `/eod` on 2026-07-24; M2/M3 remain
+gated pending their own review as M1 lands.
 
 Derived from `spec/architecture.md` (signed off, Phase 4 complete,
 2026-07-24), `spec/requirements.md` (signed off, Phase 3), and `plan.md`
@@ -276,12 +274,59 @@ architecture designed around both rather than resolving them.
 
 ---
 
+## Gap Flagged for Architect Review — Progressive Tracer Stage Between M1 and M2
+
+**Raised:** 2026-07-26, during PR #1 (M1 PoC scaffolding) review. **Status:
+flagged for architect review, not yet authorized or task-numbered** — this
+section proposes a gap, it does not amend the signed-off milestone table
+above.
+
+**The observation:** M1/PoC is a genuine tracer bullet for the
+*ingestion* slice of the architecture — `SourceAdapter`/`RunContext`,
+live ArcGIS REST access, `normalize()`'s geometry-rule pipeline, and the
+spatial join are all real, kept code exercised end-to-end against a real
+external portal (not mocked, not throwaway). But it never touches the
+*storage/serving* slice: no code anywhere yet exercises GCS, DuckDB
+(spatial or `httpfs`), Cloud Run, or the Streamlit dashboard reading from
+a bucket. That entire integration surface currently lands, untested
+end-to-end, bundled into M2 alongside grid generation and scoring —
+i.e. M2 as scoped combines two independent kinds of new risk (scoring
+correctness *and* first-time deployment/storage integration) with no
+thin slice validating the deployment path in isolation first.
+
+**Proposed gap to review:** an M1.5-style stage, inserted between M1 and
+M2, that deliberately does *not* add grid/scoring complexity — it takes
+M1's existing join output as-is and traces it through the previously
+untouched half of the architecture:
+
+* Minimal `src/etl/publish.py` (T2.14's scope, but only far enough to
+  write M1's join output, not a scoring grid)
+* Provision the actual GCS bucket + prefixes (T2.17)
+* Get the Streamlit dashboard reading that bucket via DuckDB `httpfs`
+  (the read-path half of T2.16/2F), on the trivially small M1 dataset
+
+This would be a second, narrower tracer bullet — thin, real, deployed —
+specifically for the deployment/storage integration risk, before M2 adds
+scoring on top of a storage path that's already been proven to work.
+
+**Not yet decided (architect's call):** whether this becomes its own
+numbered sub-milestone (e.g. M1.5) with its own gate, or is folded into
+M2's existing task ordering as an explicit "do T2.14/T2.16(read-path)/
+T2.17 before T2.8–T2.13" sequencing note rather than a new milestone.
+Either way, the dependency-ordering rule at the top of this document
+("adapters → normalize → spatial join/grid → scoring → dashboard") would
+need a documented exception or amendment to reflect storage/serving being
+pulled forward ahead of grid/scoring, rather than after it.
+
+---
+
 ## Next Phase
 
 Phase 6 — Implementation Readiness Review, per `playbook/project-init.md`.
-This requires Captain sign-off on this document first. Per the playbook:
-"PM must get sign-off from Captain before proceeding" out of Phase 5, and
-"Only after successful review may operational-architect begin
-implementation" out of Phase 6 — implementation (any `src/` code,
-`pytest`/lint runs, or project scaffolding beyond what already exists) is
-**not** started as part of this pass.
+Captain signed off this document and authorized M1 implementation via
+`/eod` on 2026-07-24 (see Status above); operational-architect is
+implementing T1.1–T1.12 on branch `m1-poc-scaffolding`, one commit per
+task, with a PR ("M1 POC scaffolding") opened for review rather than
+merged directly — the formal Implementation Readiness Review / M1 gate
+check (every box under `spec/requirements.md` "PoC — Done When") happens
+against that PR, not before it exists.
