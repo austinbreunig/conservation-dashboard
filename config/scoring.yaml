@@ -1,0 +1,51 @@
+# V1 restoration-priority scoring defaults (T1.3, architecture Section 2.2/2.4).
+#
+# These are the exact values architecture signed off 2026-07-24 -- a
+# documented starting heuristic (FR-4.3), not a claimed final answer;
+# FR-4.4/Refinement (M3) is expected to retune them. Every value here is
+# read by src/scoring/score.py (M2) so the dashboard's "how is this
+# calculated" note (FR-4.3) can show the real, live values in effect
+# rather than a description that can drift out of sync with the code
+# (architecture 5.7).
+#
+# score_0_10 = 10 * density_norm * (
+#     W_BASE
+#   + W_HABITAT  * proximity_habitat
+#   + W_CORRIDOR * proximity_corridor
+#   + W_TRAIL    * proximity_trail
+#   + W_ROAD     * proximity_road
+# )
+# where density_norm = min(sighting_count / SIGHTING_DENSITY_CAP, 1.0), and
+# proximity(d, max_dist) = max(0, 1 - d / max_dist).
+# W_BASE + W_HABITAT + W_CORRIDOR + W_TRAIL + W_ROAD must equal 1.0 exactly
+# (see the assertion in tests/test_scoring_config.py).
+
+# Grid (architecture 2.2)
+GRID_CELL_SIZE_M: 500
+
+# Sighting-density normalization (architecture 2.4)
+SIGHTING_DENSITY_CAP: 5
+DENSITY_SEARCH_BUFFER_M: 250
+
+# Scoring weights (architecture 2.4) -- must sum to 1.0
+W_BASE: 0.40
+W_HABITAT: 0.14
+W_CORRIDOR: 0.11
+W_TRAIL: 0.20
+W_ROAD: 0.15
+
+# Proximity decay distances, meters (architecture 2.4) -- linear decay,
+# proximity == 0 at d >= max_dist
+max_dist:
+  habitat: 1500
+  corridor: 1500
+  trail: 800
+  road: 800
+
+# Geometry-rule pipeline (architecture 5.2, rule 2 -- M2 scope, value fixed
+# here now per the config-driven convention this file already establishes)
+# Note: written as 1.0e-5 (not 1e-5) -- PyYAML's SafeLoader only resolves
+# the scientific-notation form to a float when there's an explicit decimal
+# point; "1e-5" alone parses as a str, which would silently break any
+# downstream arithmetic on this value.
+GEOMETRY_SIMPLIFY_TOLERANCE: 1.0e-5
