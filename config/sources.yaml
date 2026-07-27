@@ -59,7 +59,7 @@ sources:
     service_url: https://maps.bouldercounty.org/arcgis/rest/services/ParksOpenSpace/OP_BCPOS_TRAILHEADS/MapServer
     layer_id: 0
     local_fixture: data/raw/boco_trailheads.geojson
-    outfields: [TrailheadName, Location, LocationDescription, id]
+    outfields: [TrailheadName, Location, LocationDescription]
     notes: >
       Confirmed live 2026-07-24 (T1.7/T1.8): anonymous access, 38
       features, maxRecordCount=1000, schema/feature-count parity with
@@ -98,7 +98,7 @@ sources:
     service_url: https://maps.bouldercounty.org/arcgis/rest/services/PLANNING/BCCP_CriticalWildlifeHabitats/MapServer
     layer_id: 0
     local_fixture: data/raw/boco_critical_wildlife_habitats.geojson
-    outfields: [Acres, Description, CritWildId, Name]
+    outfields: [Name, Description, Acres]
     notes: >
       Confirmed live 2026-07-24 (T1.7): anonymous access, 77 features,
       maxRecordCount=1000, matches data/raw/boco_critical_wildlife_habitats.geojson's
@@ -112,7 +112,7 @@ sources:
     service_url: https://maps.bouldercounty.org/arcgis/rest/services/PLANNING/BCCP_WildlifeMigrationCorridors/FeatureServer
     layer_id: 0
     local_fixture: data/raw/boco_wildlife_corridors.geojson
-    outfields: [Description, CritWildId, Name, Acres]
+    outfields: [Name, Description, Acres]
     notes: >
       Confirmed live 2026-07-24 (T1.7): anonymous access, 3 features,
       maxRecordCount=2000, matches data/raw/boco_wildlife_corridors.geojson's
