@@ -69,23 +69,28 @@ sources:
   - name: boco_trailsegs
     source_type: real
     adapter: arcgis_rest
-    service_url: null
-    layer_id: null
+    service_url: https://amsagsprod1-bouldercounty.msappproxy.net/server/rest/services/POS/TrailsDissolve/FeatureServer
+    layer_id: 0
     local_fixture: data/raw/boco_trailsegs.geojson
     notes: >
-      Query endpoint NOT conclusively identified during T1.7's live
-      investigation window. Searched maps.bouldercounty.org's
-      Transportation/ folder (TRAILS_RegionalTrails: 261 features;
-      TRAILS_Bikeways: 9 features) and ParksOpenSpace/ folder -- neither
-      matches this layer's 129-feature count (data/raw/boco_trailsegs.geojson,
-      internal GeoJSON `name`: "vwTrailSegmentsDissolved", a SQL-view-style
-      name suggesting it may be published under a folder/service not yet
-      checked). Same portal and adapter shape as the other three entries
-      here is assumed, not yet verified. Follow-up action item, not a T1.2
-      blocker -- this entry still parses via yaml.safe_load with adapter
-      type/name/source_type/local_fixture present, and the pipeline
-      (src/pipeline/run.py) only needs the local_fixture for M1 PoC scope
-      (it exercises the boco_trailheads entry live, per T1.8/T1.11).
+      Confirmed live 2026-07-27 (completes T1.2/T1.7's follow-up item):
+      anonymous access, 130 features, maxRecordCount=2000, schema/field
+      list (TRAILNAME, TRAILID, TRAILSYSTEM, TRAILTYPE, BIKES,
+      ELECTRICBIKE, DOGS, HORSES, PARKGROUP) matches
+      data/raw/boco_trailsegs.geojson's actual attributes -- 1-feature
+      drift vs. the 129-feature fixture, the same small documented-drift
+      pattern as boco_trailheads above. Note this endpoint is served from
+      amsagsprod1-bouldercounty.msappproxy.net (an Azure AD App Proxy
+      host), a different portal domain than the other three entries here
+      (maps.bouldercounty.org) -- not just a different path. No
+      `outfields` set: unlike the other three entries, no
+      consultant-specified narrower field list exists yet for this
+      (corrected) endpoint, so it defaults to `outFields=*`. An earlier
+      candidate URL (`POS/Trails/FeatureServer`, no "Dissolve") was ruled
+      out before this note was written: it is a different, broader
+      362-feature trails layer with an incompatible schema (a `MILEAGE`
+      field instead of this layer's `TRAILID`/`TRAILSYSTEM`/etc) -- use
+      `POS/TrailsDissolve`, not `POS/Trails`.
 
   - name: boco_critical_wildlife_habitats
     source_type: real
@@ -115,8 +120,28 @@ sources:
       (dist_corridor_m, W_CORRIDOR) -- architecture 2.4/5.1, distinct from
       critical wildlife habitats above.
 
-# County roads (FR-1.8) and the county boundary polygon (FR-1.9) are
-# confirmed sources but their files/endpoints have not yet been acquired
-# (plan.md, spec/tasks.md T2.2/T3.2) -- deliberately no entry for either
-# yet. Adding them later is a config-only change (new entries following
-# the same schema above), per FR-1.3/NFR-7 -- no adapter code changes.
+  - name: boco_county_roads
+    source_type: real
+    adapter: arcgis_rest
+    service_url: https://amsagsprod1-bouldercounty.msappproxy.net/server/rest/services/PW/genRoad_Map_Roads/FeatureServer
+    layer_id: 0
+    local_fixture: data/raw/boco_county_roads.geojson
+    outfields: [PAVETYPE, STREET_NAME, CR]
+    notes: >
+      Confirmed live 2026-07-27: anonymous access, 2,748 features,
+      maxRecordCount=2000, same amsagsprod1-bouldercounty.msappproxy.net
+      Azure AD App Proxy portal domain as boco_trailsegs above (not
+      maps.bouldercounty.org). Resolves T2.2's consultant action item
+      ("acquire county-roads GeoJSON or confirm live FeatureServer layer
+      id/URL") -- a fixture (data/raw/boco_county_roads.geojson, downloaded
+      via `f=geojson` with resultOffset pagination against this layer's
+      maxRecordCount=2000) is also now present, so T2.2/T2.3 are fully
+      unblocked, not just URL-confirmed. `outfields` (PAVETYPE,
+      STREET_NAME, CR) is the consultant-specified field list, confirmed
+      to exist on the live schema.
+
+# The county boundary polygon (FR-1.9) is a confirmed source but its
+# file/endpoint has not yet been acquired (plan.md, spec/tasks.md T3.2) --
+# deliberately no entry for it yet. Adding it later is a config-only
+# change (a new entry following the same schema above), per FR-1.3/NFR-7
+# -- no adapter code changes.
