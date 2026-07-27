@@ -5,6 +5,11 @@ Status: **signed off — Phase 5 complete, 2026-07-24** (per
 Milestone 1 (PoC, T1.1–T1.12) via `/eod` on 2026-07-24; M2/M3 remain
 gated pending their own review as M1 lands.
 
+**Milestone 1.5 (Progressive Tracer, T1.13–T1.16) authorized 2026-07-27** —
+narrows the storage/serving gap flagged 2026-07-26 during PR #1 review down
+to a single real layer through the full production deploy path. See its own
+section below. Does not reopen M1's own gate or M2/M3's.
+
 Derived from `spec/architecture.md` (signed off, Phase 4 complete,
 2026-07-24), `spec/requirements.md` (signed off, Phase 3), and `plan.md`
 (signed off). Requirement IDs (`FR-n.n` / `NFR-n` / `OR-n`) are cited
@@ -28,6 +33,7 @@ milestones, in order:
 | Milestone | Stage | Scope | Sign-off gate |
 | --- | --- | --- | --- |
 | **M1** | PoC | One command: ≥1 source → normalize → spatial join → map render, locally, no scheduler, no grid/scoring | `spec/requirements.md` "PoC — Done When" checklist |
+| **M1.5** | Progressive Tracer | One real layer (`boco_trailheads`) through the full deploy path — real GCS bucket, real Cloud Run Job + service, dashboard reading via DuckDB `httpfs`. No join, no grid/scoring, no scheduler. | This document's own "M1.5 gate — Done When" (below); not scoped in `spec/requirements.md` |
 | **M2** | MVP | All confirmed adapters, full geometry-rule pipeline, grid + scoring, GCS publish, GCP deployment, weekly automation | `spec/requirements.md` "MVP — Done When" checklist |
 | **M3** | Refinement | Ongoing, non-gating: county-boundary precision clip, winding-order rule, active alerting, weight retuning, auth enablement | `spec/requirements.md` "Refinement — Ongoing Acceptance" |
 
@@ -98,6 +104,69 @@ bar. Every task's validation step assumes that tooling once T1.1 lands.
 
 **M1 gate:** every box under `spec/requirements.md` "PoC — Done When" is
 checked before M2 tasks begin.
+
+---
+
+## Milestone 1.5 — Progressive Tracer (Storage/Serving)
+
+**Status: authorized 2026-07-27.** Resolves the gap flagged 2026-07-26
+during PR #1 review (originally proposed as publishing M1's *join* output;
+narrowed here — see "Why narrowed" below). Sits between M1 and M2 on the
+dependency ordering rule: M2 tasks may not start until M1.5's four tasks
+below are done, in addition to M1 itself landing.
+
+**Purpose:** M1/PoC is a real tracer bullet for the *ingestion* slice
+(adapters → normalize → join) — proven end-to-end against a live external
+source. It never touches the *storage/serving* slice: no code anywhere
+exercises a real GCS bucket, DuckDB `httpfs`, an actual Cloud Run
+deployment, or the dashboard reading from a bucket instead of local disk.
+Bundling that entire untested integration surface into M2 alongside grid
+generation and scoring would combine two independent kinds of new risk —
+scoring correctness *and* first-time deployment — with no isolated proof
+the deploy path works on its own.
+
+**Why narrowed to a single layer:** the original proposal carried M1's
+*joined* output through publish. But the join (T1.10) is already proven
+code — re-running it through publish tests nothing new about
+storage/serving, it's just freight. Publishing `boco_trailheads` alone
+(chosen over the other three layers: its adapter is fully live-validated
+per T1.7/T1.8, unlike trail-segments' unconfirmed endpoint, and it avoids
+mixing synthetic-data questions into a stage whose only job is proving
+infrastructure) isolates the actual untested risk with the least code path
+carried along.
+
+**Everything in the chain below is real, not stubbed** —
+`ArcGISRestAdapter`/`normalize()` unchanged, a real GCS bucket, real
+Cloud Run Job *and* service deployments, dashboard reading the bucket via
+DuckDB `httpfs`.
+
+**Deliberately excluded (deferred to M2, not stubbed):**
+* Cloud Scheduler weekly automation (T2.21) — manual trigger only;
+  automation isn't the risk this stage tests.
+* Least-privilege IAM split between pipeline/dashboard service accounts
+  (T2.18) — one adequately-scoped service account for now; hardened
+  separation is an MVP-tier concern, not a does-the-path-work-at-all one.
+* Grid/scoring, the join, and any second source.
+
+| ID | Task | Deliverable | Depends on | Traces to | Validation |
+| --- | --- | --- | --- | --- | --- |
+| T1.13 | Provision the real GCS bucket + prefixes (single-layer subset of T2.17's scope — standing up the full prefix set costs no more than standing up part of it) | GCP bucket config | — | OR-1, OR-4, arch Section 8 | Bucket private by default; `raw/`, `processed/`, `quarantine/`, `reference/`, `current/` all exist |
+| T1.14 | Minimal single-layer publish (subset of T2.14, `boco_trailheads` only) | `src/etl/publish.py` (single-layer path) | T1.13, T1.9 | arch 5.5, FR-6.2 | `run_manifest.json` written; trailheads GeoParquet lands in the real `current/` prefix; round-trips via `geopandas.read_parquet` and DuckDB `httpfs` |
+| T1.15 | Container image + Cloud Run Job (pipeline) and Cloud Run service (dashboard), both deployed (single-layer subset of T2.19/T2.20/T2.22) | Deployed job + service | T1.14 | arch Section 8 | Manual Cloud Run Job execution succeeds, writes to the real `current/`; dashboard URL reachable with the consultant's laptop off |
+| T1.16 | Dashboard reads `current/` via DuckDB `httpfs` (read-path subset of T2.16), renders the single layer | `src/dashboard/app.py` (read-path addition) | T1.15 | FR-5.1, arch 5.7 | `streamlit run` against the deployed service renders real trailheads data pulled from the bucket, not local disk |
+
+**M1.5 gate — Done When** (self-contained; `spec/requirements.md`'s
+PoC/MVP gates don't contemplate this stage, so its acceptance criteria live
+here rather than reopening that document's sign-off):
+* [ ] `boco_trailheads`, and only that layer, flows real adapter → real
+      `normalize()` → real GCS `current/` → real Cloud Run Job, on demand.
+* [ ] The deployed dashboard (Cloud Run service, not `localhost`) renders
+      that data by reading `current/` via DuckDB `httpfs` — not local disk.
+* [ ] Re-running the Cloud Run Job a second time overwrites `current/`
+      cleanly — no manual reset, no orphaned partial state.
+* [ ] A short doc under `docs/decisions/` records the actual bucket
+      name/prefixes/service account used, so T2.17/T2.18 at MVP extend this
+      rather than re-deciding it.
 
 ---
 
@@ -230,7 +299,10 @@ The rule stated above holds throughout: **adapters before normalize,
 normalize before spatial join/grid, grid before scoring, scoring before
 dashboard.** T1.7 (access-model investigation) and T2.26 (auth doc) are the
 two branches that deliberately sit outside this critical path — see next
-section.
+section. **Milestone 1.5 (T1.13–T1.16)** inserts between `[T1.12 dashboard]`
+and M2's `[T2.1 remaining layers]`/`[T2.8 grid]` above — it runs
+`boco_trailheads` alone through a real GCS bucket and a real Cloud Run
+deploy, carrying no join/grid/scoring forward from M1.
 
 ---
 
@@ -276,10 +348,13 @@ architecture designed around both rather than resolving them.
 
 ## Gap Flagged for Architect Review — Progressive Tracer Stage Between M1 and M2
 
-**Raised:** 2026-07-26, during PR #1 (M1 PoC scaffolding) review. **Status:
-flagged for architect review, not yet authorized or task-numbered** — this
-section proposes a gap, it does not amend the signed-off milestone table
-above.
+**Raised:** 2026-07-26, during PR #1 (M1 PoC scaffolding) review.
+**Resolved 2026-07-27** — formalized as **Milestone 1.5** (see its own
+section above, between the M1 gate and Milestone 2), narrowed from this
+section's original "publish M1's join output" proposal down to a single
+real layer (`boco_trailheads`) through the full deploy path. The original
+observation and reasoning are preserved below for history; the live
+task/gate definition is the Milestone 1.5 section above, not this one.
 
 **The observation:** M1/PoC is a genuine tracer bullet for the
 *ingestion* slice of the architecture — `SourceAdapter`/`RunContext`,
@@ -293,30 +368,6 @@ end-to-end, bundled into M2 alongside grid generation and scoring —
 i.e. M2 as scoped combines two independent kinds of new risk (scoring
 correctness *and* first-time deployment/storage integration) with no
 thin slice validating the deployment path in isolation first.
-
-**Proposed gap to review:** an M1.5-style stage, inserted between M1 and
-M2, that deliberately does *not* add grid/scoring complexity — it takes
-M1's existing join output as-is and traces it through the previously
-untouched half of the architecture:
-
-* Minimal `src/etl/publish.py` (T2.14's scope, but only far enough to
-  write M1's join output, not a scoring grid)
-* Provision the actual GCS bucket + prefixes (T2.17)
-* Get the Streamlit dashboard reading that bucket via DuckDB `httpfs`
-  (the read-path half of T2.16/2F), on the trivially small M1 dataset
-
-This would be a second, narrower tracer bullet — thin, real, deployed —
-specifically for the deployment/storage integration risk, before M2 adds
-scoring on top of a storage path that's already been proven to work.
-
-**Not yet decided (architect's call):** whether this becomes its own
-numbered sub-milestone (e.g. M1.5) with its own gate, or is folded into
-M2's existing task ordering as an explicit "do T2.14/T2.16(read-path)/
-T2.17 before T2.8–T2.13" sequencing note rather than a new milestone.
-Either way, the dependency-ordering rule at the top of this document
-("adapters → normalize → spatial join/grid → scoring → dashboard") would
-need a documented exception or amendment to reflect storage/serving being
-pulled forward ahead of grid/scoring, rather than after it.
 
 ---
 

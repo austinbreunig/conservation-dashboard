@@ -406,6 +406,14 @@ of the same code paths above, invoked via `python -m pipeline.run
 --stage poc` (illustrative CLI shape; exact entrypoint is a `tasks.md`
 concern).
 
+**Milestone 1.5 scope** (added 2026-07-27, `spec/tasks.md` T1.13–T1.16):
+a progressive tracer between PoC and MVP that adds no grid/scoring — it
+takes a single already-proven layer (`boco_trailheads`) through the
+previously untouched half of this diagram for real: a real GCS bucket,
+real Cloud Run Job + service deployments, and the dashboard reading
+`current/` via DuckDB `httpfs` instead of local disk. Isolates
+deployment/storage risk from the scoring-correctness risk MVP adds on top.
+
 **MVP scope** adds: all six adapters, the grid+scoring stages, GCS
 publish, Cloud Scheduler automation, and Cloud Run hosting for the
 dashboard.
