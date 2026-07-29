@@ -29,6 +29,7 @@ dependencies = [
     "requests>=2.31",
     "pyarrow>=14.0",
     "numpy>=1.24",
+    "gcsfs>=2024.2.0",
 ]
 
 [project.optional-dependencies]
