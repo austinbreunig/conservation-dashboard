@@ -1,0 +1,13 @@
+.venv/
+.direnv/
+.git/
+__pycache__/
+*.pyc
+data/raw/*
+data/processed/*
+tests/
+docs/
+templates/
+scripts/
+*.md
+!README.md

@@ -4,7 +4,7 @@ T1.11 (PoC) scope, per spec/tasks.md and architecture Section 4's "PoC
 scope": one command, `python -m pipeline.run --stage poc`, running
 acquisition -> normalize -> spatial join in sequence with no manual
 intermediate step, exiting 0 and writing the join output to disk. No
-grid/scoring/publish/scheduler yet -- those are M2 (T2.8+, T2.13-T2.15).
+grid/scoring/scheduler yet -- those are M2 (T2.8+, T2.13, T2.15).
 
 The PoC run fetches two sources: the real `boco_trailheads` layer (via
 `ArcGISRestAdapter`, config/sources.yaml) and the synthetic moose-sighting
@@ -18,6 +18,16 @@ when the live portal is unreachable... src/pipeline/run.py handles that
 case"): a failed live ArcGIS REST fetch falls back to the already-
 downloaded `local_fixture` GeoJSON for that source, rather than failing
 the whole run.
+
+T1.15 (Milestone 1.5) adds one further step to the `poc` stage: after the
+join, publish the normalized `boco_trailheads` GeoDataFrame to the real
+GCS `current/` prefix via `etl.publish.publish_trailheads()` (T1.14) --
+this is what makes "Manual Cloud Run Job execution succeeds, writes to
+the real `current/`" (T1.15's own validation line, spec/tasks.md) true
+when this module is the deployed Job's entrypoint. This is the
+single-layer subset of T2.15's eventual full `--stage mvp` orchestration
+(grid + scoring + publish) -- no new CLI flags/stages, just one more call
+at the end of the existing `poc` stage.
 """
 
 from __future__ import annotations
@@ -37,6 +47,7 @@ from acquisition.base import RunContext
 from acquisition.synthetic import SyntheticMooseSightingsAdapter
 from etl.grid import join_nearest, write_geoparquet
 from etl.normalize import normalize
+from etl.publish import publish_trailheads
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCES_CONFIG_PATH = REPO_ROOT / "config" / "sources.yaml"
@@ -100,15 +111,18 @@ def fetch_trailheads(run_context: RunContext, config: dict) -> gpd.GeoDataFrame:
 
 
 def run_poc(output_path: Path = DEFAULT_POC_OUTPUT_PATH) -> Path:
-    """Run the M1 PoC pipeline end-to-end: fetch (>=1 real source +
-    synthetic) -> normalize -> spatial join -> write to disk. Returns the
-    path the join output was written to.
+    """Run the M1/M1.5 PoC pipeline end-to-end: fetch (>=1 real source +
+    synthetic) -> normalize -> spatial join -> write to disk -> publish
+    `boco_trailheads` to the real GCS `current/` prefix. Returns the path
+    the join output was written to.
 
-    Matches architecture Section 4's PoC scope exactly: "one command runs
+    Matches architecture Section 4's PoC scope ("one command runs
     [Adapters: >=1 source]->[Normalize]->[Spatial Join]->[map render]
-    locally, no scheduler, no grid/scoring step required yet." (Map
-    render is T1.12's separate `streamlit run` command, per spec/tasks.md
-    -- this function's job ends at the join output.)
+    locally") plus T1.15's addition of a publish step so the deployed
+    Cloud Run Job actually writes `current/` (map render is T1.12's
+    separate `streamlit run` command). Publish targets
+    `etl.publish.DEFAULT_CURRENT_PREFIX` (the real bucket) -- no override
+    here, matching T1.15's real-deploy scope.
     """
     run_id = str(uuid.uuid4())
     run_context = RunContext(run_id=run_id)
@@ -142,6 +156,15 @@ def run_poc(output_path: Path = DEFAULT_POC_OUTPUT_PATH) -> Path:
 
     written_path = write_geoparquet(joined, output_path)
     logger.info("Wrote PoC join output to %s", written_path)
+
+    publish_result = publish_trailheads(trailheads, run_id=run_id)
+    logger.info(
+        "Published %s to %s (manifest: %s)",
+        trailheads_entry["name"],
+        publish_result.layer_path,
+        publish_result.manifest_path,
+    )
+
     return written_path
 
 
