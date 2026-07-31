@@ -48,26 +48,45 @@ cycle length (weekly, per FR-1.4/FR-6.1) times 3 is a fixed day count.
 history; `reference/` is excluded because it's static reference data,
 not cycle-generated.
 
-## Service account — not yet decided
+## Service account — decided 2026-07-30 (T1.15)
 
-No dedicated service account exists yet. `gcloud iam service-accounts
-list` shows only the project's default compute service account
-(`...-compute@developer.gserviceaccount.com`); no IAM binding granting
-it (or any other identity) access to `gs://ab-spatial-cd-data` has been
-made. Per architecture Section 8, the Cloud Run Job and service will
-need their own least-privilege identity to read/write the bucket — that
-decision belongs to T1.15 (Cloud Run Job + service deployment), not this
-task, and should be recorded as an update to this doc (or a new one)
-when T1.15 lands rather than guessed at here.
+A single service account, `cd-runtime@ab-spatial-cd.iam.gserviceaccount.com`,
+was provisioned for both the pipeline Cloud Run Job and the dashboard
+Cloud Run service. Per `spec/tasks.md`'s M1.5 scope, this is deliberately
+**one** adequately-scoped identity for now, not the split
+pipeline-write/dashboard-read-only pair that full architecture Section 7
+eventually wants — that split is T2.18, deferred until the single-layer
+tracer path is proven.
+
+| Property | Value |
+| --- | --- |
+| Service account | `cd-runtime@ab-spatial-cd.iam.gserviceaccount.com` |
+| IAM binding | `roles/storage.objectAdmin`, bound at the **bucket resource** (`gs://ab-spatial-cd-data`), not the project — least-privilege relative to granting the role project-wide |
+| HMAC key | One active key (Access ID `GOOG1EZQESE27R56PMBHFZUQEGJYRMSMUCVEZA3KQSN6QSTKI6RGH3MU45JYG`), created via `gcloud storage hmac create` |
+| HMAC credential storage | Access ID and secret stored as Secret Manager secrets `cd-runtime-hmac-access-id` / `cd-runtime-hmac-secret`, both with `roles/secretmanager.secretAccessor` bound to `cd-runtime` |
+
+**Why an HMAC key exists at all:** the Cloud Run pipeline job authenticates
+via standard Application Default Credentials (the attached SA, resolved
+automatically by `gcsfs` — see `src/etl/publish.py`'s
+`storage_options=None` default), which needs no HMAC key. But DuckDB's
+*native* `gs://` scheme (used by `httpfs`) authenticates through GCS's
+S3-interoperability mode, which requires an HMAC access-key/secret pair
+rather than ADC. This was discovered during T1.14's manual verification
+(`docs/decisions/single-layer-publish-verification.md`'s "Auth caveat"
+section), where `CREATE SECRET (TYPE gcs, PROVIDER credential_chain)`
+failed with no ADC/HMAC configured. The HMAC key created here is what
+T1.16's dashboard `CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)` call
+will consume.
 
 ## Downstream implications
 
 * **T1.14** (single-layer publish) can now target
   `gs://ab-spatial-cd-data/current/` for real — no more local-disk
   standing in for GCS.
-* **T1.15** still needs: a service account for the Cloud Run Job/service,
-  IAM bindings scoping that account to this bucket (least-privilege, not
-  project-wide), and recording that decision here or in a follow-up doc.
+* **T1.15**'s service account, IAM binding, and HMAC key are provisioned
+  (above) — remaining T1.15 scope is the container image and the actual
+  Cloud Run Job/service deploy (`--service-account=cd-runtime@...`), not
+  yet done.
 * **T2.17** (MVP-scope bucket provisioning) extends this bucket rather
   than re-deciding name/region/lifecycle — those are now settled, not
   open questions.
