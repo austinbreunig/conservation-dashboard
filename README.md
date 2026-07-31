@@ -26,7 +26,8 @@ pip install -e ".[dev]"        # core deps + pytest/ruff
 ```
 
 Core dependencies: `geopandas`, `shapely`, `duckdb` (spatial extension),
-`pyyaml`, `streamlit`, `folium`, `requests`, `pyarrow`. See
+`pyyaml`, `streamlit`, `folium`, `requests`, `pyarrow`, `gcsfs` (GCS
+read/write for `src/etl/publish.py`, Milestone 1.5+). See
 `spec/architecture.md` Section 2 for why each was chosen (CRS handling,
 GeoParquet + DuckDB as the storage/query layer instead of PostGIS, etc.).
 

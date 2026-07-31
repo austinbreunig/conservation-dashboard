@@ -148,12 +148,12 @@ DuckDB `httpfs`.
   separation is an MVP-tier concern, not a does-the-path-work-at-all one.
 * Grid/scoring, the join, and any second source.
 
-| ID | Task | Deliverable | Depends on | Traces to | Validation |
-| --- | --- | --- | --- | --- | --- |
-| T1.13 | Provision the real GCS bucket + prefixes (single-layer subset of T2.17's scope — standing up the full prefix set costs no more than standing up part of it) | GCP bucket config | — | OR-1, OR-4, arch Section 8 | Bucket private by default; `raw/`, `processed/`, `quarantine/`, `reference/`, `current/` all exist |
-| T1.14 | Minimal single-layer publish (subset of T2.14, `boco_trailheads` only) | `src/etl/publish.py` (single-layer path) | T1.13, T1.9 | arch 5.5, FR-6.2 | `run_manifest.json` written; trailheads GeoParquet lands in the real `current/` prefix; round-trips via `geopandas.read_parquet` and DuckDB `httpfs` |
-| T1.15 | Container image + Cloud Run Job (pipeline) and Cloud Run service (dashboard), both deployed (single-layer subset of T2.19/T2.20/T2.22) | Deployed job + service | T1.14 | arch Section 8 | Manual Cloud Run Job execution succeeds, writes to the real `current/`; dashboard URL reachable with the consultant's laptop off |
-| T1.16 | Dashboard reads `current/` via DuckDB `httpfs` (read-path subset of T2.16), renders the single layer | `src/dashboard/app.py` (read-path addition) | T1.15 | FR-5.1, arch 5.7 | `streamlit run` against the deployed service renders real trailheads data pulled from the bucket, not local disk |
+| ID | Task | Deliverable | Depends on | Traces to | Validation | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| T1.13 | Provision the real GCS bucket + prefixes (single-layer subset of T2.17's scope — standing up the full prefix set costs no more than standing up part of it) | GCP bucket config | — | OR-1, OR-4, arch Section 8 | Bucket private by default; `raw/`, `processed/`, `quarantine/`, `reference/`, `current/` all exist | ✅ done 2026-07-28 — `gs://ab-spatial-cd-data`, see `docs/decisions/gcs-bucket-provisioning.md` |
+| T1.14 | Minimal single-layer publish (subset of T2.14, `boco_trailheads` only) | `src/etl/publish.py` (single-layer path) | T1.13, T1.9 | arch 5.5, FR-6.2 | `run_manifest.json` written; trailheads GeoParquet lands in the real `current/` prefix; round-trips via `geopandas.read_parquet` and DuckDB `httpfs` | ✅ done 2026-07-29 — see `docs/decisions/single-layer-publish-verification.md` for exactly what was verified against the real bucket vs. local-only in CI |
+| T1.15 | Container image + Cloud Run Job (pipeline) and Cloud Run service (dashboard), both deployed (single-layer subset of T2.19/T2.20/T2.22) | Deployed job + service | T1.14 | arch Section 8 | Manual Cloud Run Job execution succeeds, writes to the real `current/`; dashboard URL reachable with the consultant's laptop off | — |
+| T1.16 | Dashboard reads `current/` via DuckDB `httpfs` (read-path subset of T2.16), renders the single layer | `src/dashboard/app.py` (read-path addition) | T1.15 | FR-5.1, arch 5.7 | `streamlit run` against the deployed service renders real trailheads data pulled from the bucket, not local disk | — |
 
 **M1.5 gate — Done When** (self-contained; `spec/requirements.md`'s
 PoC/MVP gates don't contemplate this stage, so its acceptance criteria live
