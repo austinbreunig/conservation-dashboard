@@ -240,14 +240,14 @@ here rather than reopening that document's sign-off):
 
 | ID | Task | Deliverable | Depends on | Traces to | Validation |
 | --- | --- | --- | --- | --- | --- |
-| T2.24 | Finalize `run_manifest.json` schema + FR-7.1 QA summary content | `docs/` schema note | T2.14 | FR-7.1 | Manifest fields documented and match what T2.14 actually writes |
-| T2.25 | Document quarantine inspection path | `docs/` | T2.5 | FR-7.2, UW-4 | Walkthrough doc: consultant can list/open `quarantine/<source>/<run_id>.geoparquet` and see the failing rule/reason column |
+| T2.24 | Finalize `run_manifest.json` schema + FR-7.1 QA summary content | `docs/schema/run-manifest.md` | T2.14 | FR-7.1 | Manifest fields documented and match what T2.14 actually writes | ✅ done — documents the full `publish_run()`/`run_mvp()` manifest schema (all fields, status semantics, worked `degraded`-status example) plus the narrower M1.5 `publish_trailheads()` subset |
+| T2.25 | Document quarantine inspection path | `docs/schema/quarantine-inspection.md` | T2.5 | FR-7.2, UW-4 | Walkthrough doc: consultant can list/open `quarantine/<source>/<run_id>.geoparquet` and see the failing rule/reason column | ✅ done — `gsutil ls`/`gsutil cp` + `geopandas.read_parquet()` walkthrough, all four `quarantine_reason` values documented (`missing_coordinates`, `repair_invalid`, `simplify`, `duplicate`) |
 
 ### 2I. Dashboard auth (stubbed, non-gating)
 
 | ID | Task | Deliverable | Depends on | Traces to | Validation |
 | --- | --- | --- | --- | --- | --- |
-| T2.26 | Document dashboard-auth default posture + exact IAM/IAP enablement steps | `docs/decisions/dashboard-auth.md` | — | NFR-9, OR-5, arch 3.2 | Doc records the v1 default (unauthenticated Cloud Run invocations, small-trusted-audience assumption per `plan.md`) and the exact command/steps to flip to IAM-restricted or IAP-fronted access later. Explicitly marked "open pending `plan.md` Open Question 2 — not required for MVP sign-off." This task is a documentation deliverable, not a blocking implementation task. |
+| T2.26 | Document dashboard-auth default posture + exact IAM/IAP enablement steps | `docs/decisions/dashboard-auth.md` | — | NFR-9, OR-5, arch 3.2 | Doc records the v1 default (unauthenticated Cloud Run invocations, small-trusted-audience assumption per `plan.md`) and the exact command/steps to flip to IAM-restricted or IAP-fronted access later. Explicitly marked "open pending `plan.md` Open Question 2 — not required for MVP sign-off." This task is a documentation deliverable, not a blocking implementation task. | ✅ done — doc records the `--allow-unauthenticated` v1 default plus both `gcloud`/IAM and IAP enablement command blocks (and the revert-to-public commands), still explicitly marked open pending `plan.md` Open Question 2 |
 
 **M2 gate:** every box under `spec/requirements.md` "MVP — Done When" is
 checked. The carve-out this section previously noted (sources/road-proximity
