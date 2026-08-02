@@ -153,23 +153,27 @@ DuckDB `httpfs`.
 | T1.13 | Provision the real GCS bucket + prefixes (single-layer subset of T2.17's scope — standing up the full prefix set costs no more than standing up part of it) | GCP bucket config | — | OR-1, OR-4, arch Section 8 | Bucket private by default; `raw/`, `processed/`, `quarantine/`, `reference/`, `current/` all exist | ✅ done 2026-07-28 — `gs://ab-spatial-cd-data`, see `docs/decisions/gcs-bucket-provisioning.md` |
 | T1.14 | Minimal single-layer publish (subset of T2.14, `boco_trailheads` only) | `src/etl/publish.py` (single-layer path) | T1.13, T1.9 | arch 5.5, FR-6.2 | `run_manifest.json` written; trailheads GeoParquet lands in the real `current/` prefix; round-trips via `geopandas.read_parquet` and DuckDB `httpfs` | ✅ done 2026-07-29 — see `docs/decisions/single-layer-publish-verification.md` for exactly what was verified against the real bucket vs. local-only in CI |
 | T1.15 | Container image + Cloud Run Job (pipeline) and Cloud Run service (dashboard), both deployed (single-layer subset of T2.19/T2.20/T2.22) | Deployed job + service | T1.14 | arch Section 8 | Manual Cloud Run Job execution succeeds, writes to the real `current/`; dashboard URL reachable with the consultant's laptop off | ✅ done 2026-07-31 — see `docs/decisions/cloud-run-deployment.md` |
-| T1.16 | Dashboard reads `current/` via DuckDB `httpfs` (read-path subset of T2.16), renders the single layer | `src/dashboard/app.py` (read-path addition) | T1.15 | FR-5.1, arch 5.7 | `streamlit run` against the deployed service renders real trailheads data pulled from the bucket, not local disk | 🟡 code done 2026-08-01 — see `docs/decisions/cloud-run-deployment.md`; Cloud Run redeploy still pending |
+| T1.16 | Dashboard reads `current/` via DuckDB `httpfs` (read-path subset of T2.16), renders the single layer | `src/dashboard/app.py` (read-path addition) | T1.15 | FR-5.1, arch 5.7 | `streamlit run` against the deployed service renders real trailheads data pulled from the bucket, not local disk | ✅ done 2026-08-01 — deployed to `conservation-dashboard-00002-h64`, confirmed rendering real data + manifest timestamp at the live URL; see `docs/decisions/cloud-run-deployment.md` |
 
 **M1.5 gate — Done When** (self-contained; `spec/requirements.md`'s
 PoC/MVP gates don't contemplate this stage, so its acceptance criteria live
 here rather than reopening that document's sign-off):
-* [ ] `boco_trailheads`, and only that layer, flows real adapter → real
+* [x] `boco_trailheads`, and only that layer, flows real adapter → real
       `normalize()` → real GCS `current/` → real Cloud Run Job, on demand.
-* [ ] The deployed dashboard (Cloud Run service, not `localhost`) renders
+      (T1.14/T1.15.)
+* [x] The deployed dashboard (Cloud Run service, not `localhost`) renders
       that data by reading `current/` via DuckDB `httpfs` — not local disk.
-      (T1.16 code/tests done 2026-08-01; Cloud Run redeploy with the new
-      image + HMAC secrets still pending, so this box stays unchecked
-      until that happens.)
+      (T1.16, confirmed live 2026-08-01.)
 * [ ] Re-running the Cloud Run Job a second time overwrites `current/`
-      cleanly — no manual reset, no orphaned partial state.
-* [ ] A short doc under `docs/decisions/` records the actual bucket
+      cleanly — no manual reset, no orphaned partial state. (Overwrite is
+      true by construction — `write_layer_geoparquet`/`write_manifest`
+      always target the same path — but not yet re-verified with an
+      actual second Job execution against the real bucket; leaving
+      unchecked until that manual run happens.)
+* [x] A short doc under `docs/decisions/` records the actual bucket
       name/prefixes/service account used, so T2.17/T2.18 at MVP extend this
-      rather than re-deciding it.
+      rather than re-deciding it. (`docs/decisions/gcs-bucket-provisioning.md`,
+      `docs/decisions/cloud-run-deployment.md`.)
 
 ---
 
