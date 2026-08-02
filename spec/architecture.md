@@ -145,19 +145,25 @@ addition, not an architecture change.
 
 **Resolved (2026-07-24):** the consultant confirmed this is worth
 acquiring — a **Boulder County boundary polygon** is now a confirmed
-seventh data layer, source presumed to be the same ArcGIS REST Open Data
-portal as the other six (to be verified when acquired, per Section 3.1's
-"discover, don't hardcode" adapter posture). Acquisition is an open action
-item on the consultant's end — not yet downloaded, mirroring how county
-roads was carried before its file arrived (5.1). Unlike the six
-scoring/display layers, this layer is **clipping-only**: it does not feed
+seventh data layer. Unlike the six scoring/display layers, this layer is
+**clipping-only**: it does not feed
 `dist_habitat_m`/`dist_corridor_m`/`dist_trail_m`/`dist_road_m` or
 `sighting_count` (Section 2.4) — its sole role is precisely bounding the
-AOI hull described above. It uses the existing `ArcGISRestAdapter` class
-(one new config entry, zero new code, per FR-1.3/NFR-7) and, once
-acquired, replaces the buffered bounding-hull AOI with a precise clip — no
-architecture change, exactly the extension point already described in
-Section 11.
+AOI hull described above.
+
+**Acquired (2026-08-02, PR #14 review):** turned out to be a static,
+already-downloaded GeoJSON file, not a live layer on the same ArcGIS REST
+portal as the other six — the "source presumed to be the same ArcGIS REST
+Open Data portal" language above did not hold. It is wired via a new
+`StaticFileAdapter` class (`src/acquisition/static_file.py`,
+`config/sources.yaml` `adapter: static_file`) instead of
+`ArcGISRestAdapter` — a small, deliberate exception to "one adapter class
+per access pattern, config-only for new layers" (FR-1.3/NFR-7): this is a
+genuinely new access pattern (read-a-committed-file, not query-a-live-
+endpoint), so a new adapter class is the correct response per Section
+6.1's protocol, not a workaround. The grid-precise-clip half of this
+extension point (replacing the buffered bounding-hull AOI) is still open
+— see `spec/tasks.md` T3.2.
 
 ### 2.3 Storage & Query Layer — GeoParquet on GCS + DuckDB (spatial), not PostGIS
 
@@ -414,9 +420,10 @@ real Cloud Run Job + service deployments, and the dashboard reading
 `current/` via DuckDB `httpfs` instead of local disk. Isolates
 deployment/storage risk from the scoring-correctness risk MVP adds on top.
 
-**MVP scope** adds: all six adapters, the grid+scoring stages, GCS
-publish, Cloud Scheduler automation, and Cloud Run hosting for the
-dashboard.
+**MVP scope** adds: all seven adapters (six `ArcGISRestAdapter` instances
+plus the `StaticFileAdapter` county-boundary instance), the
+grid+scoring stages, GCS publish, Cloud Scheduler automation, and Cloud
+Run hosting for the dashboard.
 
 **Refinement** changes only config (`GRID_CELL_SIZE_M`, weights, decay
 distances) or adds adapters/scoring terms — no architectural change.
@@ -432,27 +439,28 @@ per NFR-7. "Stage" marks when it must first exist.
 
 * **`ArcGISRestAdapter`** (FR-1.5, FR-1.8, FR-1.9) — one reusable class,
   instantiated six times (trailheads, trail segments, critical wildlife
-  habitats, wildlife corridors, county roads, county boundary) via config
+  habitats, wildlife corridors, county roads, and — as of MVP — no longer
+  county boundary, see `StaticFileAdapter` below) via config
   (`config/sources.yaml`), not six separate classes. Handles
-  pagination/retry/auth per Section 3.1. Of these six, four (trailheads,
-  trail segments, critical wildlife habitats, wildlife corridors) already
-  have downloaded GeoJSON in `data/raw/`; county roads and the county
-  boundary polygon are confirmed as sources but their files/endpoints have
-  not yet been acquired — this affects only when those specific config
-  entries can be exercised end-to-end, not the adapter class's design.
+  pagination/retry/auth per Section 3.1. All six now have downloaded
+  GeoJSON in `data/raw/` and confirmed live endpoints wired.
+* **`StaticFileAdapter`** (FR-1.9, PR #14 review, 2026-08-02) — reads a
+  single committed, already-downloaded GeoJSON file with no live
+  endpoint. Currently one instance: `boco_county_boundary` — see 2.2.1.
+  This is the seventh confirmed data layer, clipping-only (does not feed
+  any `dist_*`/`sighting_count` scoring input).
 * **`SyntheticMooseSightingsAdapter`** (FR-1.6) — generates a fresh
   GeoDataFrame of points within the AOI on every run; deterministic seed
   is *not* used by default (each run should look like "new" sightings per
   FR-1.6), but the adapter accepts an optional seed for test
   reproducibility.
-* Both conform to the same `SourceAdapter` protocol (Section 6.1) — this
-  is the concrete mechanism behind FR-1.2/FR-1.3/NFR-7: the county
-  boundary layer just added above is a live demonstration of it (a config
-  entry, zero code), and the same holds for any future source — a new
-  `ArcGISRestAdapter` config entry (zero code) or, for a genuinely new
-  access pattern (e.g. a CSV download), one new adapter class implementing
-  the same protocol — never modifying an existing adapter or any
-  downstream module.
+* All three conform to the same `SourceAdapter` protocol (Section 6.1) —
+  this is the concrete mechanism behind FR-1.2/FR-1.3/NFR-7: the county
+  boundary layer is a live demonstration of "a genuinely new access
+  pattern gets one new adapter class implementing the same protocol,
+  never a modification to an existing adapter or any downstream module,"
+  and every other new layer on an already-supported access pattern (e.g.
+  another ArcGIS REST layer) stays config-only, zero code.
 
 *Habitat/corridor layer — confirmed, no longer an open question:*
 `data/raw/` contains **two** GeoJSON files — `boco_critical_wildlife_habitats.geojson`

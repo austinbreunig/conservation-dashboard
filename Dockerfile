@@ -30,3 +30,13 @@ COPY src/ src/
 RUN pip install --no-cache-dir -e .
 
 COPY config/ config/
+
+# boco_county_boundary (config/sources.yaml, adapter: static_file) is the
+# one source with no live endpoint -- its local_fixture is the only copy
+# of the data, in production as well as dev, unlike every other source's
+# local_fixture (a git-ignored dev/offline fallback only, never needed at
+# runtime since the live portal is queried directly). data/raw/ is
+# otherwise entirely git-ignored/excluded from this image (see
+# .gitignore), so this one file is copied explicitly rather than the
+# whole (mostly absent, gitignored) data/raw/ directory.
+COPY data/raw/boco_county_boundary.geojson data/raw/boco_county_boundary.geojson

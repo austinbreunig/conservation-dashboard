@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 import requests
+import yaml
 
 from acquisition.arcgis_rest import ArcGISRestAdapter
 from acquisition.base import RunContext
@@ -29,6 +30,22 @@ TRAILHEADS_SERVICE_URL = (
     "ParksOpenSpace/OP_BCPOS_TRAILHEADS/MapServer"
 )
 TRAILHEADS_LOCAL_FIXTURE = Path("data/raw/boco_trailheads.geojson")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SOURCES_CONFIG_PATH = REPO_ROOT / "config" / "sources.yaml"
+
+
+def _load_sources_config() -> dict:
+    with open(SOURCES_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _source_entry(name: str) -> dict:
+    config = _load_sources_config()
+    for entry in config["sources"]:
+        if entry["name"] == name:
+            return entry
+    raise AssertionError(f"No config/sources.yaml entry named {name!r}")
 
 
 def _point_feature(feature_id: int, x: float, y: float) -> dict:
@@ -327,3 +344,103 @@ def test_live_smoke_call_matches_local_trailheads_fixture_shape_and_attributes()
     local_attribute_columns = set(local_features[0]["properties"].keys())
     live_attribute_columns = set(live_result.columns) - {"geometry"}
     assert local_attribute_columns <= live_attribute_columns
+
+
+# ---------------------------------------------------------------------------
+# T2.1 -- validate the three remaining config/sources.yaml entries
+# (trail segments, critical wildlife habitats, wildlife corridors) end to
+# end against their live endpoints. boco_trailheads (above) and
+# boco_county_roads (T2.2/T2.3) are already covered elsewhere; this closes
+# out T2.1's "per-layer fetch() unit test against live/recorded endpoint"
+# validation for the last three of the six confirmed sources, driven
+# straight from config/sources.yaml rather than hardcoded copies of its
+# fields -- proof this test is actually exercising the real, currently
+# wired config, not a stale duplicate of it.
+# ---------------------------------------------------------------------------
+
+T2_1_SOURCE_NAMES = [
+    "boco_trailsegs",
+    "boco_critical_wildlife_habitats",
+    "boco_wildlife_corridors",
+]
+
+
+@pytest.mark.parametrize("source_name", T2_1_SOURCE_NAMES)
+def test_t2_1_source_entry_builds_a_valid_adapter(source_name):
+    """Config-level half of T2.1's validation: each of the three
+    remaining entries has everything `ArcGISRestAdapter` needs to be
+    constructed (service_url, layer_id), matching the same
+    "adapter type, layer id/query URL... present" check T1.2/T2.1's row
+    calls for, exercised per-source rather than only in aggregate
+    (tests/test_sources_config.py's own `test_all_real_arcgis_entries_
+    have_required_fields` covers the aggregate case)."""
+    entry = _source_entry(source_name)
+
+    adapter = ArcGISRestAdapter(
+        name=entry["name"],
+        service_url=entry["service_url"],
+        layer_id=entry["layer_id"],
+        outfields=entry.get("outfields"),
+    )
+
+    assert adapter.name == source_name
+    assert adapter.service_url == entry["service_url"].rstrip("/")
+    assert adapter.layer_id == entry["layer_id"]
+
+
+@pytest.mark.parametrize("source_name", T2_1_SOURCE_NAMES)
+def test_t2_1_source_live_fetch_matches_local_fixture_shape(source_name):
+    """T2.1's live-validation acceptance criteria for each of the three
+    remaining sources: a per-layer `fetch()` call against the live/
+    recorded endpoint returns a geometry type and feature count matching
+    the already-downloaded local fixture -- the same shape of proof
+    `test_live_smoke_call_matches_local_trailheads_fixture_shape_and_
+    attributes` above already established for trailheads (T1.8),
+    generalized across the other three confirmed layers this ticket
+    wires.
+
+    Edge case: skipped (not failed) whenever the git-ignored local
+    fixture isn't present in this checkout or the live portal is
+    unreachable -- matching this module's existing skip-not-fail
+    convention for every other network-dependent test.
+    """
+    entry = _source_entry(source_name)
+    fixture_path = REPO_ROOT / entry["local_fixture"]
+    if not fixture_path.exists():
+        pytest.skip(
+            f"{fixture_path} not present in this checkout (data/raw/ is git-ignored) -- "
+            "live smoke test needs it as the parity baseline"
+        )
+
+    with open(fixture_path) as f:
+        local_geojson = json.load(f)
+    local_features = local_geojson["features"]
+    if not local_features:
+        pytest.skip(f"{fixture_path} has no features to compare against")
+
+    adapter = ArcGISRestAdapter(
+        name=entry["name"],
+        service_url=entry["service_url"],
+        layer_id=entry["layer_id"],
+        outfields=entry.get("outfields"),
+    )
+    ctx = RunContext(run_id="test-run-live-smoke")
+
+    try:
+        live_result = adapter.fetch(ctx)
+    except requests.RequestException as exc:
+        pytest.skip(f"live portal unreachable: {exc}")
+
+    # A small documented-drift tolerance, matching how
+    # config/sources.yaml's own notes describe trailheads/trailsegs
+    # parity ("within a small documented drift tolerance") rather than
+    # requiring an exact count match against a point-in-time snapshot.
+    assert abs(len(live_result) - len(local_features)) <= max(1, len(local_features) // 20)
+    # Compare against every local feature's geometry type, not just the
+    # first -- some layers (e.g. critical wildlife habitats) legitimately
+    # mix Polygon and MultiPolygon features, so a single-feature sample
+    # would be a flaky/incorrect baseline.
+    local_geom_types = {f["geometry"]["type"] for f in local_features}
+    assert set(live_result.geometry.geom_type.unique()) == local_geom_types
+    if entry.get("outfields"):
+        assert set(entry["outfields"]) <= (set(live_result.columns) - {"geometry"})

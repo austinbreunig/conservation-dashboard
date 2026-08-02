@@ -18,23 +18,32 @@
 #                   here.
 #   adapter        Which adapter class consumes this entry. "arcgis_rest"
 #                   -> src.acquisition.arcgis_rest.ArcGISRestAdapter.
+#                   "static_file" -> src.acquisition.static_file.
+#                   StaticFileAdapter, for the one source (county
+#                   boundary) that has no live endpoint at all.
 #   service_url    Base ArcGIS REST FeatureServer/MapServer *service* URL
 #                   (no trailing slash, no /query, no layer id) -- e.g.
 #                   ".../FeatureServer" or ".../MapServer". The adapter
 #                   builds the actual query endpoint as
 #                   "<service_url>/<layer_id>/query" (architecture 6.2).
-#   layer_id       Integer layer id within the service.
+#                   Not present on `adapter: static_file` entries -- they
+#                   have no live endpoint to query.
+#   layer_id       Integer layer id within the service. Not present on
+#                   `adapter: static_file` entries.
 #   local_fixture  Repo-relative path to an already-downloaded GeoJSON
-#                   snapshot of this source, used as a dev/offline fallback
-#                   when the live portal is unreachable (data/raw/ is
+#                   snapshot of this source. For `adapter: arcgis_rest`
+#                   entries this is a dev/offline fallback used only when
+#                   the live portal is unreachable (data/raw/ is
 #                   git-ignored -- see .gitignore -- so this path may not
 #                   exist in every checkout; src/pipeline/run.py handles
-#                   that case). NOTE: these local snapshots were downloaded
-#                   with every field present, so they may be a superset of
-#                   whatever `outfields` (below) requests from the live
-#                   portal -- that's expected/safe, not a bug, since
-#                   `outfields` only restricts the live fetch, not the
-#                   fixture.
+#                   that case); NOTE: these local snapshots were
+#                   downloaded with every field present, so they may be a
+#                   superset of whatever `outfields` (below) requests from
+#                   the live portal -- that's expected/safe, not a bug,
+#                   since `outfields` only restricts the live fetch, not
+#                   the fixture. For the `adapter: static_file` entry,
+#                   this is instead the *only* copy of the data -- see
+#                   that entry's notes and the Dockerfile.
 #   outfields      Optional list of field names to request from the layer
 #                   (passed through to ArcGISRestAdapter's `outfields`
 #                   constructor arg, joined into a comma-separated
@@ -72,6 +81,7 @@ sources:
     service_url: https://amsagsprod1-bouldercounty.msappproxy.net/server/rest/services/POS/TrailsDissolve/FeatureServer
     layer_id: 0
     local_fixture: data/raw/boco_trailsegs.geojson
+    outfields: [TRAILNAME, TRAILSYSTEM, TRAILTYPE]
     notes: >
       Confirmed live 2026-07-27 (completes T1.2/T1.7's follow-up item):
       anonymous access, 130 features, maxRecordCount=2000, schema/field
@@ -82,15 +92,25 @@ sources:
       pattern as boco_trailheads above. Note this endpoint is served from
       amsagsprod1-bouldercounty.msappproxy.net (an Azure AD App Proxy
       host), a different portal domain than the other three entries here
-      (maps.bouldercounty.org) -- not just a different path. No
-      `outfields` set: unlike the other three entries, no
-      consultant-specified narrower field list exists yet for this
-      (corrected) endpoint, so it defaults to `outFields=*`. An earlier
+      (maps.bouldercounty.org) -- not just a different path. An earlier
       candidate URL (`POS/Trails/FeatureServer`, no "Dissolve") was ruled
       out before this note was written: it is a different, broader
       362-feature trails layer with an incompatible schema (a `MILEAGE`
       field instead of this layer's `TRAILID`/`TRAILSYSTEM`/etc) -- use
       `POS/TrailsDissolve`, not `POS/Trails`.
+      Re-validated live end-to-end 2026-08-01 (T2.1): `ArcGISRestAdapter.
+      fetch()` against this exact config entry returns 130 features
+      (LineString/MultiLineString), same field list plus a few
+      ArcGIS-system columns (ObjectID, Shape__Length, Difficulty,
+      TotalLengthFt, TotalLengthMiles) expected from `outFields=*` -- see
+      tests/acquisition/test_arcgis_rest.py's parametrized T2.1 live
+      smoke tests. `outfields` narrowed to [TRAILNAME, TRAILSYSTEM,
+      TRAILTYPE] per PR #14 review (2026-08-02): the fuller 9-field list
+      above was what the live endpoint carries, not what this project
+      needs downstream, so both the live query and
+      config/schema_manifest.yaml's expected schema are narrowed
+      together, matching the other four ArcGIS entries' existing
+      narrow-`outfields` pattern.
 
   - name: boco_critical_wildlife_habitats
     source_type: real
@@ -105,6 +125,8 @@ sources:
       feature count exactly. Feeds its own proximity scoring input
       (dist_habitat_m, W_HABITAT) -- architecture 2.4/5.1, not merged with
       wildlife corridors below.
+      Re-validated live end-to-end 2026-08-01 (T2.1): still 77 features
+      (Polygon/MultiPolygon), fields exactly [Name, Description, Acres].
 
   - name: boco_wildlife_corridors
     source_type: real
@@ -119,6 +141,8 @@ sources:
       feature count exactly. Feeds its own proximity scoring input
       (dist_corridor_m, W_CORRIDOR) -- architecture 2.4/5.1, distinct from
       critical wildlife habitats above.
+      Re-validated live end-to-end 2026-08-01 (T2.1): still 3 features
+      (Polygon), fields exactly [Name, Description, Acres].
 
   - name: boco_county_roads
     source_type: real
@@ -140,8 +164,23 @@ sources:
       STREET_NAME, CR) is the consultant-specified field list, confirmed
       to exist on the live schema.
 
-# The county boundary polygon (FR-1.9) is a confirmed source but its
-# file/endpoint has not yet been acquired (plan.md, spec/tasks.md T3.2) --
-# deliberately no entry for it yet. Adding it later is a config-only
-# change (a new entry following the same schema above), per FR-1.3/NFR-7
-# -- no adapter code changes.
+  - name: boco_county_boundary
+    source_type: real
+    adapter: static_file
+    local_fixture: data/raw/boco_county_boundary.geojson
+    notes: >
+      Acquired 2026-08-02 (unblocks spec/tasks.md T3.2's source-config
+      half; the grid-clip half of T3.2 is still Refinement-tagged/not
+      done here). Per PR #14 review: this layer is static (a single
+      county-boundary polygon that doesn't change run to run), not
+      config-driven ArcGIS REST like the other five real sources -- it
+      has no `service_url`/`layer_id`, only a `local_fixture`, and is
+      fetched via the new `adapter: static_file`
+      (src/acquisition/static_file.py's `StaticFileAdapter`) rather than
+      `ArcGISRestAdapter`. Unlike every other entry's `local_fixture`
+      (a dev/offline fallback only -- data/raw/ is git-ignored, so
+      production relies on the live portal), this is the *only* copy in
+      production too: there is no live endpoint to fall back from, so
+      the Dockerfile explicitly `COPY`s this one file into the image
+      (see Dockerfile's own comment) even though data/raw/ is otherwise
+      excluded from both git and the image.

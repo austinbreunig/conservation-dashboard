@@ -182,18 +182,18 @@ here rather than reopening that document's sign-off):
 
 | ID | Task | Deliverable | Depends on | Traces to | Validation | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| T2.1 | Wire trail-segments, critical-habitat, corridor config entries + validate each end-to-end | `config/sources.yaml` additions | T1.8 | FR-1.5 | Per-layer `fetch()` unit test against live/recorded endpoint; geometry type matches T2.8's expected-schema manifest | — |
+| T2.1 | Wire trail-segments, critical-habitat, corridor config entries + validate each end-to-end | `config/sources.yaml` additions | T1.8 | FR-1.5 | Per-layer `fetch()` unit test against live/recorded endpoint; geometry type matches T2.8's expected-schema manifest | ✅ done 2026-08-01 — all three entries were already wired in `config/sources.yaml`; added per-layer live-smoke `fetch()` tests (`tests/acquisition/test_arcgis_rest.py::test_t2_1_source_live_fetch_matches_local_fixture_shape`) and re-validated each live: `boco_trailsegs` 130 features (LineString/MultiLineString), `boco_critical_wildlife_habitats` 77 features (Polygon/MultiPolygon), `boco_wildlife_corridors` 3 features (Polygon) |
 | T2.2 | ~~Acquire county-roads GeoJSON or confirm live `FeatureServer` layer id/URL~~ | `data/raw/boco_county_roads.geojson`, confirmed endpoint recorded in `config/sources.yaml` | — | FR-1.8, `plan.md` Scope | Consultant action item | ✅ done 2026-07-27 — `boco_county_roads` entry added (`genRoad_Map_Roads/FeatureServer`, 2,748 features, confirmed live), single roads source covers all county roads, no separate layer needed |
 | T2.3 | Wire county-roads config entry + validate fetch end-to-end | `config/sources.yaml` addition | T2.2 | FR-1.8 | `fetch()` unit test against the real/recorded roads endpoint | ✅ done 2026-07-27 — `tests/test_sources_config.py::test_boco_county_roads_entry_present_and_wired` |
 
 ### 2B. Normalize extensions
 
-| ID | Task | Deliverable | Depends on | Traces to | Validation |
-| --- | --- | --- | --- | --- | --- |
-| T2.4 | `simplify` rule (geometry rule #2) | `src/etl/normalize.py` | T1.9 | arch 5.2 rule 2 [MVP] | Unit test: vertex count decreases at `tolerance=1e-5`; bounding box unchanged within tolerance (no visible coarsening) |
-| T2.5 | Quarantine routing + per-rule reason column | `src/etl/normalize.py`, `quarantine/<source>/<run_id>.geoparquet` | T1.9 | FR-2.3, FR-7.1, FR-7.2 | Unit test: a record with missing/invalid coordinates, a duplicate, or a rule failure is routed to quarantine with the failing rule's name attached, never dropped |
-| T2.6 | Per-source expected-schema manifest + fail-loud validation | `src/etl/normalize.py` + schema manifest file | T1.9 | FR-2.4 | Unit test: an unexpected/missing field triggers a logged error and run status `"degraded"`, not silent coercion |
-| T2.7 | `enforce_winding_order` stub registered (no-op passthrough) | `src/etl/normalize.py` | T1.9 | arch 5.2 rule 3 [Refinement, stubbed now] | Unit test confirms the rule is present in the pipeline list and is currently an identity function |
+| ID | Task | Deliverable | Depends on | Traces to | Validation | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| T2.4 | `simplify` rule (geometry rule #2) | `src/etl/normalize.py` | T1.9 | arch 5.2 rule 2 [MVP] | Unit test: vertex count decreases at `tolerance=1e-5`; bounding box unchanged within tolerance (no visible coarsening) | ✅ done 2026-08-01 — `simplify()` registered as `GEOMETRY_RULES[1]`, runs *after* reprojection (tolerance is EPSG:26913 meters, not native degrees — a T1.9-era ordering change, see `src/etl/normalize.py` module docstring); `tests/etl/test_normalize.py::test_simplify_reduces_vertex_count_without_changing_bbox` et al. |
+| T2.5 | Quarantine routing + per-rule reason column | `src/etl/normalize.py`, `quarantine/<source>/<run_id>.geoparquet` | T1.9 | FR-2.3, FR-7.1, FR-7.2 | Unit test: a record with missing/invalid coordinates, a duplicate, or a rule failure is routed to quarantine with the failing rule's name attached, never dropped | ✅ done 2026-08-01 — `normalize()`'s optional `quarantine_sink` list argument collects quarantined records (`quarantine_reason`: rule name, `"missing_coordinates"`, or `"duplicate"`), never dropped; `write_quarantine_geoparquet()` writes them to `quarantine/<source>/<run_id>.geoparquet`. Deliberately *not* surfaced via `.attrs` — that broke `pandas`/`sjoin_nearest` when two `normalize()` outputs are combined (attrs-equality comparison on nested DataFrames raises); see `tests/etl/test_normalize.py`'s quarantine-routing tests and the regression guard `test_normalize_output_never_carries_attrs_that_break_pandas_combine_ops` |
+| T2.6 | Per-source expected-schema manifest + fail-loud validation | `src/etl/normalize.py` + schema manifest file | T1.9 | FR-2.4 | Unit test: an unexpected/missing field triggers a logged error and run status `"degraded"`, not silent coercion | ✅ done 2026-08-01 — `config/schema_manifest.yaml` (one entry per source) + `normalize(..., expected_fields=...)`/`check_expected_schema()`; a missing or unexpected field sets `result.attrs["status"] = "degraded"` and logs via `logger.error`, opt-in per call (omitting `expected_fields` skips the check); `tests/etl/test_normalize.py`'s T2.6 test block |
+| T2.7 | `enforce_winding_order` stub registered (no-op passthrough) | `src/etl/normalize.py` | T1.9 | arch 5.2 rule 3 [Refinement, stubbed now] | Unit test confirms the rule is present in the pipeline list and is currently an identity function | ✅ done 2026-08-01 — `enforce_winding_order()` registered as `GEOMETRY_RULES[2]`, identity passthrough; `tests/etl/test_normalize.py::test_enforce_winding_order_is_an_identity_function`/`test_enforce_winding_order_is_registered_as_geometry_rule_3` |
 
 ### 2C. Spatial Join + Grid Generation — `src/etl/grid.py`
 
@@ -261,7 +261,7 @@ and T2.11 is unblocked (see "Blocked Tasks Summary").
 | ID | Task | Deliverable | Depends on | Traces to | Validation | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | T3.1 | Implement `enforce_winding_order` rule (replaces T2.7's stub) | `src/etl/normalize.py` | T2.7 | arch 5.2 rule 3 [Refinement] | Unit test: exterior rings forced CCW, holes CW (RFC 7946), on a fixture with reversed winding | — |
-| T3.2 | **Acquire Boulder County boundary polygon** (consultant action) + wire `config/sources.yaml` entry + clip grid precisely to it, replacing the buffered bounding hull | `data/raw/boco_county_boundary.geojson` (or confirmed endpoint), `config/sources.yaml` addition, `src/etl/grid.py` clip logic | T2.8 | FR-1.9, arch 2.2.1, Section 11 | Grid regenerates clipped to the boundary polygon instead of the buffered hull; cell count drops slightly at the AOI edge as expected; entry added to `spec/changelog.md` | 🔒 **BLOCKED** on acquisition (source presumed same ArcGIS REST portal, to be verified per arch 2.2.1) — Refinement-tagged, **not** an MVP gate |
+| T3.2 | Acquire Boulder County boundary polygon (consultant action) ✅ done + wire `config/sources.yaml` entry ✅ done (PR #14 review, 2026-08-02) + clip grid precisely to it, replacing the buffered bounding hull ⏳ still open | `data/raw/boco_county_boundary.geojson` ✅, `config/sources.yaml` addition ✅ (`boco_county_boundary`, `adapter: static_file`), `src/etl/grid.py` clip logic ⏳ | T2.8 | FR-1.9, arch 2.2.1, Section 11 | Grid regenerates clipped to the boundary polygon instead of the buffered hull; cell count drops slightly at the AOI edge as expected; entry added to `spec/changelog.md` | Source acquired + wired — **no longer blocked on acquisition**. Grid-clip logic itself is still open, Refinement-tagged, **not** an MVP gate |
 | T3.3 | Active failure alerting (Cloud Monitoring → email) | Monitoring alert policy | T2.21 | FR-6.3, OR-3 | Manually fail a scheduled run once, confirm alert email received; infra-only change, zero app-code diff | — |
 | T3.4 | First real weight/formula retuning cycle | `config/scoring.yaml` changes | T2.13 (MVP scoring live for ≥1 cycle) | FR-4.4, NFR-7 | A weight or `max_dist` changed in `config/scoring.yaml` only — no code touched in acquisition/ETL/dashboard; entry added to `spec/changelog.md` (per Requirements' Refinement acceptance criterion) | — |
 | T3.5 | Dashboard auth enablement (if/when the `plan.md` open question resolves) | GCP IAM/IAP config change | T2.26 | NFR-9, OR-5 | IAM restriction or IAP enabled per T2.26's documented steps; `git diff src/dashboard/` is empty, confirming zero app-code change | — |
@@ -319,11 +319,14 @@ needed. T2.3 (wire + validate) is done. T2.11 (`dist_road_m`) and full
 MVP scoring (T2.13) are unblocked and open for M2 implementation like any
 other task, not gated on acquisition anymore.
 
-**Blocked on county-boundary acquisition (T3.2):**
-* Precise AOI clipping (replaces the buffered bounding-hull approximation
-  used everywhere in M2). This is Refinement-tagged (FR-1.9) and **does
-  not block MVP sign-off** — M2's grid generation (T2.8) intentionally uses
-  the bounding-hull approximation and ships without this.
+**County-boundary acquisition (T3.2) — resolved 2026-08-02, no longer
+blocking:** `boco_county_boundary` is acquired and wired into
+`config/sources.yaml` (`adapter: static_file`, PR #14 review). The
+remaining piece — precise AOI clipping, replacing the buffered
+bounding-hull approximation used everywhere in M2 — is Refinement-tagged
+(FR-1.9) and **does not block MVP sign-off**: M2's grid generation (T2.8)
+intentionally uses the bounding-hull approximation and ships without
+this.
 
 **Soft-blocked / non-gating (informational, not acquisition-blocked):**
 * T1.7 — ArcGIS REST access model investigation is unresolved as of this

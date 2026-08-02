@@ -1,4 +1,4 @@
-"""Tests for src/etl/normalize.py (T1.9)."""
+"""Tests for src/etl/normalize.py (T1.9, T2.4, T2.5, T2.6, T2.7)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,19 @@ from pathlib import Path
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
 
-from etl.normalize import PROJECT_CRS, normalize, repair_invalid
+from etl.normalize import (
+    GEOMETRY_RULES,
+    PROJECT_CRS,
+    check_expected_schema,
+    enforce_winding_order,
+    load_expected_schema,
+    normalize,
+    repair_invalid,
+    simplify,
+    write_quarantine_geoparquet,
+)
 
 TRAILHEADS_LOCAL_FIXTURE = Path("data/raw/boco_trailheads.geojson")
 
@@ -180,3 +190,436 @@ def test_ingested_at_is_identical_across_records_in_the_same_call():
     )
 
     assert result["ingested_at"].nunique() == 1
+
+
+# ---------------------------------------------------------------------------
+# T2.4 -- simplify geometry rule
+# ---------------------------------------------------------------------------
+
+
+def test_simplify_reduces_vertex_count_without_changing_bbox():
+    """T2.4's exact acceptance criteria: at the configured tolerance
+    (1e-5), vertex count decreases while the bounding box stays unchanged
+    within tolerance (no visible coarsening).
+
+    This test checks a polygon with a run of near-collinear, tightly
+    spaced "noise" vertices along one edge (spacing 1e-7, two orders of
+    magnitude below the 1e-5 tolerance) collapses to far fewer vertices,
+    while its bounding box is preserved to within the tolerance.
+    """
+    noisy_edge = [(i * 1.0e-7, 0.0) for i in range(50)]
+    polygon = Polygon([*noisy_edge, (50 * 1.0e-7, 10.0), (0.0, 10.0), (0.0, 0.0)])
+    original_vertex_count = len(polygon.exterior.coords)
+
+    result = simplify(polygon, tolerance=1.0e-5)
+
+    assert result is not None
+    assert len(result.exterior.coords) < original_vertex_count
+    for original, simplified in zip(polygon.bounds, result.bounds, strict=True):
+        assert original == pytest.approx(simplified, abs=1.0e-4)
+
+
+def test_simplify_returns_none_when_geometry_is_already_empty():
+    """A geometry that simplifies away to nothing (or was already empty)
+    must return None (routes to quarantine) rather than handing
+    downstream code an empty/degenerate geometry silently.
+
+    This test checks the guaranteed-empty case (an already-empty Polygon
+    input) rather than trying to force `shapely.simplify` itself to
+    collapse a tiny-but-nonempty polygon -- with `preserve_topology=True`,
+    shapely deliberately keeps a minimal valid ring rather than emptying
+    a nonempty polygon, so that behavior isn't a reliable trigger; the
+    already-empty case is the one this rule must actually guard.
+    """
+    result = simplify(Polygon(), tolerance=1.0e-5)
+
+    assert result is None
+
+
+def test_simplify_passes_through_none():
+    assert simplify(None) is None
+
+
+def test_simplify_is_registered_as_geometry_rule_2_in_the_default_pipeline():
+    """T2.4's deliverable is `simplify` becoming part of the pipeline, not
+    just existing as a standalone function -- this test checks it's the
+    second rule in GEOMETRY_RULES, after repair_invalid and before
+    enforce_winding_order (architecture 5.2's rule ordering)."""
+    assert [rule.__name__ for rule in GEOMETRY_RULES] == [
+        "repair_invalid",
+        "simplify",
+        "enforce_winding_order",
+    ]
+
+
+def test_normalize_runs_simplify_after_reprojection_not_before():
+    """architecture 5.2's tolerance is meaningful in EPSG:26913 *meters*
+    -- this test checks the rule pipeline (which includes `simplify`)
+    runs on the already-reprojected geometry, not the source's native
+    lon/lat degrees, by asserting a rule injected into the pipeline
+    receives a geometry whose coordinates are in the thousands (UTM
+    meters for Boulder County), not the -105/40-ish degree range the
+    input was given in.
+    """
+    seen_coords: list[tuple[float, float]] = []
+
+    def _spy_rule(geometry):
+        seen_coords.append((geometry.x, geometry.y))
+        return geometry
+
+    _spy_rule.__name__ = "spy_rule"
+
+    raw = gpd.GeoDataFrame(
+        {"id": [1]}, geometry=[Point(-105.25, 40.05)], crs="EPSG:4326"
+    )
+
+    normalize(
+        raw,
+        source_name="test_source",
+        source_type="real",
+        run_id="run-001",
+        rules=[_spy_rule],
+    )
+
+    assert len(seen_coords) == 1
+    x, y = seen_coords[0]
+    assert x > 100_000  # EPSG:26913 easting for Boulder County is ~480,000m
+    assert y > 1_000_000  # EPSG:26913 northing for Boulder County is ~4,400,000m
+
+
+# ---------------------------------------------------------------------------
+# T2.7 -- enforce_winding_order stub
+# ---------------------------------------------------------------------------
+
+
+def test_enforce_winding_order_is_an_identity_function():
+    """T2.7: the real implementation is Refinement-tagged (T3.1) -- for
+    now this rule must be a no-op passthrough, changing nothing about the
+    geometry it's given."""
+    polygon = Polygon([(0, 0), (0, 1), (1, 1), (1, 0), (0, 0)])
+
+    result = enforce_winding_order(polygon)
+
+    assert result is polygon
+
+
+def test_enforce_winding_order_is_registered_as_geometry_rule_3():
+    """This test checks enforce_winding_order is present in the default
+    pipeline (its slot is reserved, per architecture 5.2), as the third
+    and final rule."""
+    assert GEOMETRY_RULES[-1] is enforce_winding_order
+
+
+# ---------------------------------------------------------------------------
+# T2.5 -- quarantine routing
+# ---------------------------------------------------------------------------
+
+
+def _points_gdf(records: list[dict]) -> gpd.GeoDataFrame:
+    """Build a small EPSG:4326 GeoDataFrame from a list of
+    {"id": ..., "geometry": ...} dicts -- shared helper for the
+    quarantine tests below."""
+    return gpd.GeoDataFrame(records, crs="EPSG:4326")
+
+
+def test_missing_coordinates_are_quarantined_not_dropped():
+    """FR-2.3's exact acceptance criteria: a record with missing
+    coordinates is routed to quarantine, not silently dropped.
+
+    This test checks that a record with a `None` geometry is absent from
+    the clean result but present in `quarantine_sink`, tagged with reason
+    `"missing_coordinates"` and carrying its original attribute value.
+    """
+    raw = _points_gdf(
+        [
+            {"id": "keep", "geometry": Point(-105.30, 40.02)},
+            {"id": "missing", "geometry": None},
+        ]
+    )
+    sink: list[gpd.GeoDataFrame] = []
+
+    result = normalize(
+        raw, source_name="test_source", source_type="real", run_id="run-001", quarantine_sink=sink
+    )
+
+    assert list(result["id"]) == ["keep"]
+    assert len(sink) == 1
+    quarantined = sink[0]
+    assert list(quarantined["id"]) == ["missing"]
+    assert list(quarantined["quarantine_reason"]) == ["missing_coordinates"]
+    # Quarantined records still carry the same provenance stamps as clean
+    # ones (architecture 5.2) -- traceable to their source/run.
+    assert quarantined["source_name"].iloc[0] == "test_source"
+    assert quarantined["run_id"].iloc[0] == "run-001"
+
+
+def test_record_failing_a_geometry_rule_is_quarantined_with_that_rules_name():
+    """architecture 5.2: a record that fails a rule is quarantined with
+    *that rule's name* attached, not a generic "invalid" reason.
+
+    This test checks that a custom rule (`always_fail`) that
+    unconditionally returns None results in the record landing in
+    `quarantine_sink` with `quarantine_reason == "always_fail"`.
+    """
+
+    def always_fail(geometry):
+        return None
+
+    always_fail.__name__ = "always_fail"
+
+    raw = _points_gdf([{"id": "a", "geometry": Point(-105.30, 40.02)}])
+    sink: list[gpd.GeoDataFrame] = []
+
+    result = normalize(
+        raw,
+        source_name="test_source",
+        source_type="real",
+        run_id="run-001",
+        rules=[always_fail],
+        quarantine_sink=sink,
+    )
+
+    assert len(result) == 0
+    assert len(sink) == 1
+    assert list(sink[0]["quarantine_reason"]) == ["always_fail"]
+
+
+def test_duplicate_records_are_quarantined_with_duplicate_reason():
+    """FR-2.3: a duplicate record is routed to quarantine, not dropped
+    outright and not silently kept as a second copy either.
+
+    This test checks that of two records sharing identical geometry and
+    attributes, the first is kept clean and the second is quarantined
+    with reason "duplicate".
+    """
+    raw = _points_gdf(
+        [
+            {"id": "same", "geometry": Point(-105.30, 40.02)},
+            {"id": "same", "geometry": Point(-105.30, 40.02)},
+        ]
+    )
+    sink: list[gpd.GeoDataFrame] = []
+
+    result = normalize(
+        raw, source_name="test_source", source_type="real", run_id="run-001", quarantine_sink=sink
+    )
+
+    assert len(result) == 1
+    assert len(sink) == 1
+    assert list(sink[0]["quarantine_reason"]) == ["duplicate"]
+
+
+def test_distinct_records_are_not_flagged_as_duplicates():
+    """Sanity check the other direction: two records with different
+    geometry must never be flagged as duplicates of each other."""
+    raw = _points_gdf(
+        [
+            {"id": "a", "geometry": Point(-105.30, 40.02)},
+            {"id": "b", "geometry": Point(-105.20, 40.10)},
+        ]
+    )
+    sink: list[gpd.GeoDataFrame] = []
+
+    result = normalize(
+        raw, source_name="test_source", source_type="real", run_id="run-001", quarantine_sink=sink
+    )
+
+    assert len(result) == 2
+    assert sink == []
+
+
+def test_normalize_output_never_carries_attrs_that_break_pandas_combine_ops():
+    """Regression guard: an earlier design stored the quarantined
+    GeoDataFrame itself in `.attrs`, which crashes as soon as two
+    normalize() outputs are combined (e.g. `etl.grid.join_nearest`'s
+    `gpd.sjoin_nearest`) because pandas compares `.attrs` for equality
+    when merging frames, and comparing two differently-shaped DataFrames
+    raises ValueError instead of returning a bool.
+
+    This test checks that combining two normalize() outputs via
+    `pandas.concat` -- the same kind of operation join/grid code performs
+    -- doesn't raise, proving `.attrs` only holds plain, comparable
+    values now.
+    """
+    import pandas as pd
+
+    raw_a = _points_gdf([{"id": "a", "geometry": Point(-105.30, 40.02)}])
+    raw_b = _points_gdf([{"sighting_id": 1, "geometry": Point(-105.20, 40.10)}])
+
+    result_a = normalize(raw_a, source_name="source_a", source_type="real", run_id="run-001")
+    result_b = normalize(
+        raw_b, source_name="source_b", source_type="synthetic", run_id="run-001"
+    )
+
+    combined = pd.concat([result_a, result_b])  # must not raise
+    assert len(combined) == 2
+
+
+def test_write_quarantine_geoparquet_writes_reason_column(tmp_path):
+    """T2.5's "routed to quarantine/<source>/<run_id>.geoparquet" deliverable
+    -- this test checks the quarantined GeoDataFrame round-trips through
+    `write_quarantine_geoparquet()`/`geopandas.read_parquet` at the exact
+    documented path, with `quarantine_reason` intact.
+    """
+    raw = _points_gdf(
+        [
+            {"id": "keep", "geometry": Point(-105.30, 40.02)},
+            {"id": "missing", "geometry": None},
+        ]
+    )
+    sink: list[gpd.GeoDataFrame] = []
+    normalize(
+        raw,
+        source_name="boco_trailheads",
+        source_type="real",
+        run_id="run-abc",
+        quarantine_sink=sink,
+    )
+    quarantined = sink[0]
+
+    result = write_quarantine_geoparquet(
+        quarantined,
+        source_name="boco_trailheads",
+        run_id="run-abc",
+        quarantine_prefix=str(tmp_path / "quarantine"),
+    )
+
+    expected_path = tmp_path / "quarantine" / "boco_trailheads" / "run-abc.geoparquet"
+    assert result.path == str(expected_path)
+    assert result.record_count == 1
+    reread = gpd.read_parquet(expected_path)
+    assert list(reread["quarantine_reason"]) == ["missing_coordinates"]
+
+
+def test_write_quarantine_geoparquet_is_a_noop_for_empty_input(tmp_path):
+    """Writing an empty quarantine file every run for every clean source
+    would make quarantine/ noisy for no benefit -- this test checks an
+    empty GeoDataFrame produces no file and a `path=None` result."""
+    empty = gpd.GeoDataFrame({"quarantine_reason": []}, geometry=[], crs=PROJECT_CRS)
+
+    result = write_quarantine_geoparquet(
+        empty,
+        source_name="boco_trailheads",
+        run_id="run-abc",
+        quarantine_prefix=str(tmp_path / "quarantine"),
+    )
+
+    assert result.path is None
+    assert result.record_count == 0
+    assert not (tmp_path / "quarantine").exists()
+
+
+# ---------------------------------------------------------------------------
+# T2.6 -- per-source expected-schema manifest + fail-loud validation
+# ---------------------------------------------------------------------------
+
+
+def test_check_expected_schema_reports_success_when_fields_match():
+    gdf = _points_gdf([{"TrailheadName": "Alpha", "geometry": Point(-105.3, 40.0)}])
+
+    status, issues = check_expected_schema(gdf, ["TrailheadName"])
+
+    assert status == "success"
+    assert issues == []
+
+
+def test_check_expected_schema_flags_missing_field_as_degraded():
+    """T2.6's exact acceptance criteria: a field the manifest expects but
+    the data doesn't have marks the run degraded, not silently coerced.
+    """
+    gdf = _points_gdf([{"TrailheadName": "Alpha", "geometry": Point(-105.3, 40.0)}])
+
+    status, issues = check_expected_schema(gdf, ["TrailheadName", "LocationDescription"])
+
+    assert status == "degraded"
+    assert any("LocationDescription" in issue for issue in issues)
+
+
+def test_check_expected_schema_flags_unexpected_field_as_degraded():
+    """Same acceptance criteria, other direction: a field present in the
+    data but not in the manifest also degrades the run rather than being
+    silently accepted/coerced in."""
+    gdf = _points_gdf(
+        [{"TrailheadName": "Alpha", "UnexpectedField": 1, "geometry": Point(-105.3, 40.0)}]
+    )
+
+    status, issues = check_expected_schema(gdf, ["TrailheadName"])
+
+    assert status == "degraded"
+    assert any("UnexpectedField" in issue for issue in issues)
+
+
+def test_normalize_marks_status_degraded_on_schema_mismatch():
+    """This test checks that normalize()'s `expected_fields` argument
+    surfaces the same degraded outcome, via `result.attrs`, so a caller
+    doesn't have to call `check_expected_schema()` separately."""
+    raw = _points_gdf([{"TrailheadName": "Alpha", "geometry": Point(-105.3, 40.0)}])
+
+    result = normalize(
+        raw,
+        source_name="boco_trailheads",
+        source_type="real",
+        run_id="run-001",
+        expected_fields=["TrailheadName", "LocationDescription"],
+    )
+
+    assert result.attrs["status"] == "degraded"
+    assert result.attrs["schema_issues"]
+
+
+def test_normalize_logs_an_error_on_schema_mismatch(caplog):
+    """T2.6's literal acceptance criteria: an unexpected/missing field
+    "triggers a logged error" -- this test checks a log record at ERROR
+    level is actually emitted, not just that `.attrs["status"]` flips.
+    """
+    raw = _points_gdf([{"TrailheadName": "Alpha", "geometry": Point(-105.3, 40.0)}])
+
+    with caplog.at_level("ERROR", logger="etl.normalize"):
+        normalize(
+            raw,
+            source_name="boco_trailheads",
+            source_type="real",
+            run_id="run-001",
+            expected_fields=["TrailheadName", "LocationDescription"],
+        )
+
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
+def test_normalize_status_defaults_to_success_without_expected_fields():
+    """Schema validation is opt-in (module docstring) -- this test checks
+    that omitting `expected_fields` entirely never degrades a run."""
+    raw = _points_gdf([{"TrailheadName": "Alpha", "geometry": Point(-105.3, 40.0)}])
+
+    result = normalize(raw, source_name="boco_trailheads", source_type="real", run_id="run-001")
+
+    assert result.attrs["status"] == "success"
+    assert result.attrs["schema_issues"] == []
+
+
+def test_load_expected_schema_returns_fields_for_known_source():
+    """This test checks config/schema_manifest.yaml's real
+    `boco_trailheads` entry loads correctly -- the actual manifest file
+    T2.6 requires, not a test fixture."""
+    fields = load_expected_schema("boco_trailheads")
+
+    assert fields == ["TrailheadName", "Location", "LocationDescription"]
+
+
+def test_load_expected_schema_returns_none_for_unknown_source():
+    assert load_expected_schema("not_a_real_source") is None
+
+
+def test_load_expected_schema_returns_none_when_manifest_file_missing(tmp_path):
+    assert load_expected_schema("boco_trailheads", path=tmp_path / "nope.yaml") is None
+
+
+def test_simplify_handles_a_linestring_not_just_polygons():
+    """simplify() (module import check) must work across geometry types,
+    since trail-segment sources (T2.1) are LineStrings, not polygons."""
+    line = LineString([(0, 0), (1.0e-7, 1.0e-6), (2.0e-7, 0), (10, 10)])
+
+    result = simplify(line, tolerance=1.0e-5)
+
+    assert result is not None
+    assert len(result.coords) <= len(line.coords)

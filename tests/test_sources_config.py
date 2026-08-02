@@ -44,8 +44,9 @@ def test_boco_trailsegs_has_confirmed_live_endpoint():
     entry's prior `notes` history). This test checks the now-confirmed
     live endpoint (T1.2 follow-up, 2026-07-27) is wired: the corrected
     `POS/TrailsDissolve` (not `POS/Trails`, a different/incompatible
-    layer) FeatureServer, layer id 0, with no `outfields` narrowing (no
-    consultant-specified field list exists for this corrected endpoint).
+    layer) FeatureServer, layer id 0, with `outfields` narrowed to
+    [TRAILNAME, TRAILSYSTEM, TRAILTYPE] per PR #14 review (2026-08-02),
+    matching config/schema_manifest.yaml's own narrowed expected schema.
     """
     config = _load_config()
     entry = _entry(config, "boco_trailsegs")
@@ -56,7 +57,7 @@ def test_boco_trailsegs_has_confirmed_live_endpoint():
     )
     assert entry["layer_id"] == 0
     assert entry["service_url"].endswith("POS/TrailsDissolve/FeatureServer")
-    assert entry.get("outfields") is None
+    assert entry["outfields"] == ["TRAILNAME", "TRAILSYSTEM", "TRAILTYPE"]
     assert entry["local_fixture"] == "data/raw/boco_trailsegs.geojson"
 
 
@@ -81,6 +82,23 @@ def test_boco_county_roads_entry_present_and_wired():
     assert entry["layer_id"] == 0
     assert entry["outfields"] == ["PAVETYPE", "STREET_NAME", "CR"]
     assert entry["local_fixture"] == "data/raw/boco_county_roads.geojson"
+
+
+def test_boco_county_boundary_entry_present_and_wired():
+    """boco_county_boundary is a new entry (PR #14 review, unblocks
+    spec/tasks.md T3.2's source-config half). Unlike every other entry,
+    it uses `adapter: static_file` (src/acquisition/static_file.py) and
+    has no `service_url`/`layer_id` -- there's no live endpoint, only the
+    committed `local_fixture` (also copied into the Docker image, see
+    Dockerfile)."""
+    config = _load_config()
+    entry = _entry(config, "boco_county_boundary")
+
+    assert entry["source_type"] == "real"
+    assert entry["adapter"] == "static_file"
+    assert entry["local_fixture"] == "data/raw/boco_county_boundary.geojson"
+    assert "service_url" not in entry
+    assert "layer_id" not in entry
 
 
 def test_all_real_arcgis_entries_have_required_fields():
