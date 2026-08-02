@@ -86,14 +86,19 @@ Requirements are numbered `FR-n.n` / `NFR-n` for traceability into
   yet been downloaded/acquired** as of this writing — only its source is
   confirmed. This is an acquisition-status gap, not an open design
   question, and does not block finalizing the FR-1.5 adapter shape.
-* **FR-1.9** [Refinement] A **Boulder County boundary polygon**, confirmed
-  2026-07-24 as a seventh data layer, presumed to originate from the same
-  ArcGIS REST portal as the other six (to be verified when acquired). It
-  SHALL be retrieved via the same FR-1.5 adapter — no separate adapter
-  type required. Unlike FR-1.1–FR-1.8's layers, this one is **not a
-  scoring input** (FR-4.1 unaffected) — its sole purpose is precisely
-  clipping the FR-3.4 grid's AOI, replacing the buffered bounding-hull
-  approximation used until it's acquired (`spec/architecture.md` 2.2.1).
+* **FR-1.9** A **Boulder County boundary polygon**, confirmed 2026-07-24
+  as a seventh data layer. Acquired 2026-08-02 (PR #14 review): turned
+  out to be a static, already-downloaded file rather than a live layer on
+  the same ArcGIS REST portal as the other six, so it is retrieved via a
+  separate `StaticFileAdapter` (still the same `SourceAdapter` protocol,
+  FR-1.2/FR-1.3) — not the FR-1.5 `ArcGISRestAdapter`. This source-
+  acquisition-and-wiring half is done; the [Refinement] tag now applies
+  only to the remaining grid-clip half (spec/tasks.md T3.2). Unlike
+  FR-1.1–FR-1.8's layers, this one is **not a scoring input** (FR-4.1
+  unaffected) — its sole purpose is precisely clipping the FR-3.4 grid's
+  AOI, replacing the buffered bounding-hull
+  approximation used until `src/etl/grid.py`'s clip logic lands
+  (`spec/architecture.md` 2.2.1, `spec/tasks.md` T3.2).
   As of this writing it has **not yet been downloaded/acquired** — an
   open action item, not a design question — and its acquisition is not a
   gate for MVP sign-off (the hull-based AOI approximation is sufficient
@@ -123,9 +128,10 @@ Requirements are numbered `FR-n.n` / `NFR-n` for traceability into
   unexpectedly, rather than guessing or coercing silently.
 * **FR-2.5** — **Not applicable.** All confirmed sources are
   coordinate-bearing GIS data: trailheads/trail segments/critical wildlife
-  habitats/wildlife corridors/county roads/the county boundary polygon are
-  GeoJSON from Boulder County's ArcGIS REST portal (FR-1.5/FR-1.8/FR-1.9),
-  and synthetic moose sightings are generated with coordinates by
+  habitats/wildlife corridors/county roads are GeoJSON from Boulder
+  County's ArcGIS REST portal (FR-1.5/FR-1.8), the county boundary
+  polygon is a static already-downloaded GeoJSON file (FR-1.9), and
+  synthetic moose sightings are generated with coordinates by
   construction (FR-1.6). "Volunteer field reports" — the only scenario
   that would have needed geocoding — is confirmed out of scope. Retained
   here only for numbering continuity with the prior draft; not a gate for

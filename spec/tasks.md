@@ -261,7 +261,7 @@ and T2.11 is unblocked (see "Blocked Tasks Summary").
 | ID | Task | Deliverable | Depends on | Traces to | Validation | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | T3.1 | Implement `enforce_winding_order` rule (replaces T2.7's stub) | `src/etl/normalize.py` | T2.7 | arch 5.2 rule 3 [Refinement] | Unit test: exterior rings forced CCW, holes CW (RFC 7946), on a fixture with reversed winding | — |
-| T3.2 | **Acquire Boulder County boundary polygon** (consultant action) + wire `config/sources.yaml` entry + clip grid precisely to it, replacing the buffered bounding hull | `data/raw/boco_county_boundary.geojson` (or confirmed endpoint), `config/sources.yaml` addition, `src/etl/grid.py` clip logic | T2.8 | FR-1.9, arch 2.2.1, Section 11 | Grid regenerates clipped to the boundary polygon instead of the buffered hull; cell count drops slightly at the AOI edge as expected; entry added to `spec/changelog.md` | 🔒 **BLOCKED** on acquisition (source presumed same ArcGIS REST portal, to be verified per arch 2.2.1) — Refinement-tagged, **not** an MVP gate |
+| T3.2 | Acquire Boulder County boundary polygon (consultant action) ✅ done + wire `config/sources.yaml` entry ✅ done (PR #14 review, 2026-08-02) + clip grid precisely to it, replacing the buffered bounding hull ⏳ still open | `data/raw/boco_county_boundary.geojson` ✅, `config/sources.yaml` addition ✅ (`boco_county_boundary`, `adapter: static_file`), `src/etl/grid.py` clip logic ⏳ | T2.8 | FR-1.9, arch 2.2.1, Section 11 | Grid regenerates clipped to the boundary polygon instead of the buffered hull; cell count drops slightly at the AOI edge as expected; entry added to `spec/changelog.md` | Source acquired + wired — **no longer blocked on acquisition**. Grid-clip logic itself is still open, Refinement-tagged, **not** an MVP gate |
 | T3.3 | Active failure alerting (Cloud Monitoring → email) | Monitoring alert policy | T2.21 | FR-6.3, OR-3 | Manually fail a scheduled run once, confirm alert email received; infra-only change, zero app-code diff | — |
 | T3.4 | First real weight/formula retuning cycle | `config/scoring.yaml` changes | T2.13 (MVP scoring live for ≥1 cycle) | FR-4.4, NFR-7 | A weight or `max_dist` changed in `config/scoring.yaml` only — no code touched in acquisition/ETL/dashboard; entry added to `spec/changelog.md` (per Requirements' Refinement acceptance criterion) | — |
 | T3.5 | Dashboard auth enablement (if/when the `plan.md` open question resolves) | GCP IAM/IAP config change | T2.26 | NFR-9, OR-5 | IAM restriction or IAP enabled per T2.26's documented steps; `git diff src/dashboard/` is empty, confirming zero app-code change | — |
@@ -319,11 +319,14 @@ needed. T2.3 (wire + validate) is done. T2.11 (`dist_road_m`) and full
 MVP scoring (T2.13) are unblocked and open for M2 implementation like any
 other task, not gated on acquisition anymore.
 
-**Blocked on county-boundary acquisition (T3.2):**
-* Precise AOI clipping (replaces the buffered bounding-hull approximation
-  used everywhere in M2). This is Refinement-tagged (FR-1.9) and **does
-  not block MVP sign-off** — M2's grid generation (T2.8) intentionally uses
-  the bounding-hull approximation and ships without this.
+**County-boundary acquisition (T3.2) — resolved 2026-08-02, no longer
+blocking:** `boco_county_boundary` is acquired and wired into
+`config/sources.yaml` (`adapter: static_file`, PR #14 review). The
+remaining piece — precise AOI clipping, replacing the buffered
+bounding-hull approximation used everywhere in M2 — is Refinement-tagged
+(FR-1.9) and **does not block MVP sign-off**: M2's grid generation (T2.8)
+intentionally uses the bounding-hull approximation and ships without
+this.
 
 **Soft-blocked / non-gating (informational, not acquisition-blocked):**
 * T1.7 — ArcGIS REST access model investigation is unresolved as of this

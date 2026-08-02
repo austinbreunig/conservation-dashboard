@@ -18,29 +18,18 @@
 # concern (T2.15's full orchestrator), not normalize()'s own.
 #
 # Fields below match each source's config/sources.yaml `outfields` list
-# where one is configured (the exact fields requested from the live
-# portal); for boco_trailsegs, which has no `outfields` narrowing (see
-# that entry's notes in config/sources.yaml -- defaults to `outFields=*`),
-# the fields are the actual attribute columns T1.2/T2.1's live
-# investigation observed on that layer.
+# (the exact fields requested from the live portal). Every entry now has
+# an `outfields` narrowing -- boco_trailsegs was the last holdout (see
+# its config/sources.yaml notes for the PR-review-requested narrowing to
+# [TRAILNAME, TRAILSYSTEM, TRAILTYPE], down from the full 9-column
+# `outFields=*` set T1.2/T2.1's live investigation originally observed).
 
 schemas:
   boco_trailheads:
     fields: [TrailheadName, Location, LocationDescription]
 
   boco_trailsegs:
-    fields:
-      [
-        TRAILNAME,
-        TRAILID,
-        TRAILSYSTEM,
-        TRAILTYPE,
-        BIKES,
-        ELECTRICBIKE,
-        DOGS,
-        HORSES,
-        PARKGROUP,
-      ]
+    fields: [TRAILNAME, TRAILSYSTEM, TRAILTYPE]
 
   boco_critical_wildlife_habitats:
     fields: [Name, Description, Acres]
@@ -53,3 +42,6 @@ schemas:
 
   synthetic_moose_sightings:
     fields: [sighting_id]
+
+  boco_county_boundary:
+    fields: [OBJECTID, Shapearea, Shapelen]

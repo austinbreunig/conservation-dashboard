@@ -3,6 +3,11 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+# boco_county_boundary is the one source with no live endpoint (config/
+# sources.yaml, adapter: static_file) -- it must be committed and built
+# into the image (Dockerfile), unlike every other data/raw/*.geojson
+# fixture, which is a git-ignored dev-only fallback for a live source.
+!data/raw/boco_county_boundary.geojson
 
 # Python
 __pycache__/

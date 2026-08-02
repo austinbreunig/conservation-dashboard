@@ -4,6 +4,7 @@
 __pycache__/
 *.pyc
 data/raw/*
+!data/raw/boco_county_boundary.geojson
 data/processed/*
 tests/
 docs/
