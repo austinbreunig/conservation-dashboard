@@ -119,26 +119,56 @@ Public access here is purely "make the URL reachable to prove the deploy
 pipeline works," not a statement about the eventual production access
 model.
 
-## Known limitation — dashboard shows no real data yet
+## Dashboard read path (T1.16)
 
-The dashboard container still reads the local PoC join file
-(`data/processed/poc_join.geoparquet`) via `src/dashboard/app.py`'s
-`load_join_output()` — it does **not** yet read `current/` via DuckDB
-`httpfs` (that's T1.16, which depends on this task and hasn't started).
-That file doesn't exist inside the deployed container (it's git-ignored,
-produced locally by `python -m pipeline.run --stage poc`, never copied
-into the image), so the deployed dashboard renders `st.error(...)` — a
-clear "run the PoC pipeline first" message — rather than a map. This is
-expected per T1.15's own validation line in `spec/tasks.md`: "dashboard
-URL reachable with the consultant's laptop off," not "renders real
-data." T1.16 is the follow-up that fixes this by switching the read path
-to `current/`.
+Status: done 2026-08-01 (T1.16). Traces to `spec/tasks.md` T1.16 and
+`spec/architecture.md` Section 5.7.
+
+`src/dashboard/app.py` now reads `current/boco_trailheads.geoparquet`
+and `current/run_manifest.json` from the real bucket via DuckDB
+`httpfs`/`spatial`, replacing the local-disk PoC join read described in
+the (now-resolved) "Known limitation" this section used to document.
+`load_join_output()`/`to_map_dataframe()` and the local
+`data/processed/poc_join.geoparquet` read path are gone entirely — no
+fallback was kept, since a silent fallback to local disk would mask a
+broken GCS read rather than surface it.
+
+**Why HMAC, not ADC.** The pipeline Job writes via `gcsfs`/Application
+Default Credentials (`cd-runtime`'s own service-account identity,
+unchanged by this task). The dashboard *reads* via DuckDB's native
+`gs://` support instead, which requires a `CREATE SECRET (TYPE gcs, ...)`
+statement backed by **HMAC key/secret** credentials, not ADC — DuckDB's
+`httpfs` extension has no ADC/service-account-JSON credential type of
+its own. Two new Secret Manager secrets carry these:
+`cd-runtime-hmac-access-id`/`cd-runtime-hmac-secret`, both granted
+`roles/secretmanager.secretAccessor` to the existing `cd-runtime`
+service account (no new identity — see
+`docs/decisions/gcs-bucket-provisioning.md` for the account itself).
+Cloud Run wires them into the container as env vars
+`GCS_HMAC_ACCESS_ID`/`GCS_HMAC_SECRET` via `--set-secrets`, added to the
+same deploy command that pushes the new image (one combined
+build-and-deploy step, not deploy-then-update — an intermediate
+revision with the old image but the new secrets, or vice versa, would
+serve an error page publicly for no benefit).
+
+**Image tag:** `us-central1-docker.pkg.dev/ab-spatial-cd/conservation-dashboard/app:t1.16`,
+same Dockerfile/entrypoint-override pattern as `:t1.15` above — only the
+application code and the two new `--set-secrets` entries changed on the
+service, not the container strategy.
+
+The pipeline Job needed no change for this task — it already writes via
+`gcsfs`/ADC, so no HMAC secrets belong on it, and no new IAM was needed
+(`cd-runtime` already held `secretAccessor` on both secrets from
+provisioning).
 
 ## Downstream implications
 
-* **T1.16** (dashboard reads `current/` via DuckDB `httpfs`) can now
-  target this real deployed service and the real bucket — no more local
-  join file standing in for a published layer.
+* **T2.16** (multi-layer dashboard read, scoring grid/choropleth,
+  context layers, synthetic sightings layer, methodology note,
+  staleness/alerting on the manifest, split dashboard-only service
+  account) extends this read path rather than re-deciding the HMAC/
+  DuckDB-`httpfs` approach or the single-secret-pair credential shape —
+  those are now settled.
 * **T2.17–T2.22** (MVP-scope full deploy: multi-layer publish, split
   service accounts, Cloud Scheduler, full observability) extend this
   image/Job/service rather than re-deciding the base image strategy,
