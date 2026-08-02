@@ -1,93 +1,166 @@
 """Minimal Streamlit dashboard -- `src/dashboard/app.py` (architecture
 Section 5.7, FR-5.1).
 
-T1.12 (PoC) scope, per spec/tasks.md: `streamlit run src/dashboard/app.py`
-renders the M1 PoC join output (T1.10/T1.11's `data/processed/poc_join.geoparquet`,
-written by `python -m pipeline.run --stage poc`) on an interactive map.
+T1.16 (Milestone 1.5) scope, per spec/tasks.md: `streamlit run
+src/dashboard/app.py` renders the published `current/boco_trailheads.geoparquet`
+(T1.14's publish output), read live via DuckDB `httpfs`/`spatial`, plus the
+"last updated" timestamp from `current/run_manifest.json` (FR-5.4) --
+replacing T1.12's local-disk PoC read path (`load_join_output`/
+`to_map_dataframe`, both gone; `current/` is the only source of truth
+now, architecture 5.7).
 
 **Deliberately not built yet** (M2/T2.16 scope, per architecture 5.7):
-color-coded scoring grid, per-source context layers, the always-on
-"Moose Sightings (Synthetic / Illustrative)" layer label enforcement,
-"last updated" timestamp read from `run_manifest.json` (doesn't exist
-until T2.14/publish), the live methodology note driven by
-`config/scoring.yaml`, and reading from a published `current/` GCS
-prefix via DuckDB rather than a local file. None of that infrastructure
-exists at M1 -- this file reads the local PoC join output directly via
-GeoPandas, the simplest thing that satisfies T1.12's "render the PoC join
-output on an interactive map" requirement without building ahead of the
-milestone that actually needs it (Wu Wei, architecture Section 1).
-
-The one disclosure principle pulled forward from architecture 2.5 even at
-this minimal stage: every point on this map is a synthetic moose sighting
-(T1.6), and the map says so in plain text -- not deferred to M2 just
-because the *enforced, non-togglable* version of that label is MVP scope.
+color-coded scoring grid, per-source context layers, the synthetic
+moose-sightings layer, the live methodology note driven by
+`config/scoring.yaml`, staleness/alerting on the manifest, any caching
+beyond the connection itself. None of that infrastructure exists at
+M1.5 -- Wu Wei, architecture Section 1.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
+from typing import Any
 
-import geopandas as gpd
+import duckdb
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_POC_JOIN_PATH = REPO_ROOT / "data" / "processed" / "poc_join.geoparquet"
+from etl.publish import DEFAULT_CURRENT_PREFIX, TRAILHEADS_LAYER_NAME
 
 
-def load_join_output(path: Path = DEFAULT_POC_JOIN_PATH) -> gpd.GeoDataFrame:
-    """Read the PoC join GeoParquet (T1.10/T1.11's output) from disk.
-    Raises FileNotFoundError with a clear, actionable message if the PoC
-    pipeline hasn't been run yet -- the dashboard's only real
-    "precondition failed" case at this stage."""
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} does not exist yet. Run `python -m pipeline.run --stage poc` "
-            "first to produce the PoC join output this dashboard renders."
+def _hmac_credentials_from_env() -> tuple[str, str]:
+    """Read the DuckDB GCS HMAC key/secret pair from env vars
+    (`GCS_HMAC_ACCESS_ID`/`GCS_HMAC_SECRET`, the same two names Cloud Run
+    wires from Secret Manager). Raises `RuntimeError` naming the missing
+    var if either is unset, so a misconfigured deploy fails loudly
+    instead of surfacing as an opaque DuckDB 403 once a query runs.
+    """
+    access_id = os.environ.get("GCS_HMAC_ACCESS_ID")
+    secret = os.environ.get("GCS_HMAC_SECRET")
+    if not access_id:
+        raise RuntimeError("GCS_HMAC_ACCESS_ID environment variable is not set.")
+    if not secret:
+        raise RuntimeError("GCS_HMAC_SECRET environment variable is not set.")
+    return access_id, secret
+
+
+def create_connection(
+    gcs_credentials: tuple[str, str] | None = None,
+) -> duckdb.DuckDBPyConnection:
+    """Build a DuckDB connection with `httpfs`+`spatial` loaded. Registers
+    a `CREATE SECRET (TYPE gcs, ...)` only when `gcs_credentials` is
+    passed, so local/test runs against a plain path stay credential-free.
+    """
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial;")
+    if gcs_credentials is not None:
+        access_id, secret = gcs_credentials
+        con.execute(
+            f"""
+            CREATE SECRET (
+                TYPE gcs,
+                KEY_ID '{access_id}',
+                SECRET '{secret}'
+            );
+            """
         )
-    return gpd.read_parquet(path)
+    return con
 
 
-def to_map_dataframe(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
-    """Reproject the join output back to WGS84 lon/lat -- architecture
-    2.1's rule that "reprojection back to EPSG:4326 happens only at the
-    dashboard's final rendering boundary" -- and flatten geometry into the
-    plain `lon`/`lat` columns pydeck's layer/tooltip API expects."""
-    wgs84 = gdf.to_crs("EPSG:4326")
-    df = pd.DataFrame(wgs84.drop(columns="geometry"))
-    df["lon"] = wgs84.geometry.x
-    df["lat"] = wgs84.geometry.y
-    return df
+@st.cache_resource
+def get_connection() -> duckdb.DuckDBPyConnection:
+    """Process-global DuckDB connection (architecture 5.7): a connection
+    is a reusable resource, not data that can go stale, so caching it
+    just avoids reopening the GCS-backed file on every rerun within a
+    warm container instance. Split from `create_connection()` so the
+    plain function stays unit-testable without a Streamlit script-run
+    context."""
+    return create_connection(_hmac_credentials_from_env())
+
+
+def load_trailheads(
+    con: duckdb.DuckDBPyConnection,
+    current_prefix: str = DEFAULT_CURRENT_PREFIX,
+) -> pd.DataFrame:
+    """Read `<current_prefix>/boco_trailheads.geoparquet` via DuckDB,
+    reprojecting to lon/lat for pydeck. Uses `con.cursor()` rather than
+    the shared connection directly (architecture 5.7's thread-safety
+    posture for a process-global `@st.cache_resource` connection).
+
+    `always_xy := true` is the one real gotcha in `ST_Transform` -- omit
+    it and every point lands with lon/lat transposed (authority-defined
+    lat/lon axis order instead of lon/lat).
+    """
+    path = f"{current_prefix.rstrip('/')}/{TRAILHEADS_LAYER_NAME}.geoparquet"
+    return (
+        con.cursor()
+        .execute(
+            f"""
+            SELECT
+                "TrailheadName" AS name,
+                ST_X(ST_Transform(geometry, 'EPSG:26913', 'EPSG:4326', always_xy := true)) AS lon,
+                ST_Y(ST_Transform(geometry, 'EPSG:26913', 'EPSG:4326', always_xy := true)) AS lat
+            FROM read_parquet('{path}')
+            """
+        )
+        .fetchdf()
+    )
+
+
+def load_manifest(
+    con: duckdb.DuckDBPyConnection,
+    current_prefix: str = DEFAULT_CURRENT_PREFIX,
+) -> dict[str, Any]:
+    """Read `<current_prefix>/run_manifest.json` via DuckDB `read_json`
+    -- FR-5.4's "last updated" display. Goes through DuckDB rather than
+    `fsspec`/`etl.publish.read_manifest` so the dashboard container has
+    one auth mechanism (the HMAC/`gs://` secret above), not two
+    independently failing credential paths. Columns are explicitly typed
+    `VARCHAR` so `read_json`'s type auto-detection doesn't parse
+    `run_timestamp_utc` into a DuckDB `TIMESTAMP` (silently reformatting
+    it, dropping the exact ISO-8601 string the manifest wrote).
+    """
+    path = f"{current_prefix.rstrip('/')}/run_manifest.json"
+    row = (
+        con.cursor()
+        .execute(
+            f"""
+            SELECT run_id, run_timestamp_utc, status
+            FROM read_json(
+                '{path}',
+                columns = {{run_id: 'VARCHAR', run_timestamp_utc: 'VARCHAR', status: 'VARCHAR'}}
+            )
+            """
+        )
+        .fetchdf()
+        .iloc[0]
+    )
+    return {
+        "run_id": row["run_id"],
+        "run_timestamp_utc": row["run_timestamp_utc"],
+        "status": row["status"],
+    }
 
 
 def build_deck(df: pd.DataFrame) -> pdk.Deck:
-    """Build the pydeck Deck for the PoC join output: one scatterplot
-    layer of moose-sighting points, with a tooltip surfacing each point's
-    distance to its nearest trailhead (T1.10's `dist_trail_m` join
-    column) -- proof the join, not just the raw sightings, is what's on
-    screen.
-    """
+    """Build the pydeck Deck for the trailheads layer: one scatterplot
+    layer, tooltip surfacing each trailhead's name."""
     view_state = pdk.ViewState(
         longitude=float(df["lon"].mean()),
         latitude=float(df["lat"].mean()),
-        zoom=9,
+        zoom=10,
     )
     layer = pdk.Layer(
         "ScatterplotLayer",
         data=df,
         get_position=["lon", "lat"],
         get_radius=150,
-        get_fill_color=[200, 30, 0, 160],
+        get_fill_color=[30, 130, 76, 200],
         pickable=True,
     )
-    tooltip = {
-        "html": (
-            "Sighting {sighting_id}<br/>"
-            "Nearest trailhead: {TrailheadName}<br/>"
-            "Distance: {dist_trail_m} m"
-        )
-    }
+    tooltip = {"html": "Trailhead: {name}"}
     return pdk.Deck(
         layers=[layer],
         initial_view_state=view_state,
@@ -97,24 +170,22 @@ def build_deck(df: pd.DataFrame) -> pdk.Deck:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Conservation Dashboard -- PoC", layout="wide")
-    st.title("Conservation Dashboard -- M1 Proof of Concept")
-    st.caption(
-        "Moose sightings shown here are synthetic / illustrative (T1.6), "
-        "standing in for real wildlife-observation data this portfolio "
-        "project doesn't have access to. Distance is to the nearest "
-        "Boulder County trailhead (T1.10's spatial join)."
-    )
+    st.set_page_config(page_title="Conservation Dashboard", layout="wide")
+    st.title("Conservation Dashboard -- Boulder County Trailheads")
 
     try:
-        joined = load_join_output()
-    except FileNotFoundError as exc:
+        con = get_connection()
+        df = load_trailheads(con)
+        manifest = load_manifest(con)
+    except Exception as exc:
         st.error(str(exc))
         return
 
-    df = to_map_dataframe(joined)
     st.pydeck_chart(build_deck(df))
-    st.caption(f"{len(df)} synthetic sighting(s) joined against nearest trailheads.")
+    st.caption(
+        f"{TRAILHEADS_LAYER_NAME}: {len(df)} feature(s) from {DEFAULT_CURRENT_PREFIX} "
+        f"-- last updated {manifest['run_timestamp_utc']} ({manifest['status']})"
+    )
 
 
 if __name__ == "__main__":
