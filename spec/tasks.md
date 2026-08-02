@@ -234,7 +234,7 @@ here rather than reopening that document's sign-off):
 | T2.20 | Cloud Run Job (pipeline) deployed | Deployed job | T2.15, T2.19 | arch Section 8 | On-demand manual execution succeeds, writes to `current/` |
 | T2.21 | Cloud Scheduler weekly trigger (OIDC, `run.invoker` scoped to this job) | Scheduler config | T2.20 | FR-6.1, OR-2 | Manually trigger scheduler once; confirm Cloud Run Job execution + updated `run_manifest.json` timestamp |
 | T2.22 | Cloud Run service (dashboard) deployed, min instances 0, unauthenticated invocations allowed (v1 default per arch 3.2) | Deployed service | T2.16, T2.19 | FR-5.3, OR-1 | Dashboard URL reachable, renders current data with the consultant's laptop off |
-| T2.23 | *(conditional)* Secret Manager entry for ArcGIS API key | Secret Manager config | T1.7 | Security Model Section 7 | Only required if T1.7's investigation finds a key is needed; if T1.7 concludes anonymous access suffices, mark this task explicitly not-applicable rather than leaving it open |
+| T2.23 | *(conditional)* Secret Manager entry for ArcGIS API key | Secret Manager config | T1.7 | Security Model Section 7 | Only required if T1.7's investigation finds a key is needed; if T1.7 concludes anonymous access suffices, mark this task explicitly not-applicable rather than leaving it open | ⬛ **not applicable** — T1.7 confirmed anonymous access on every layer, no key/token required (`docs/decisions/arcgis-rest-access-model.md`) |
 
 ### 2H. QA / Observability
 
