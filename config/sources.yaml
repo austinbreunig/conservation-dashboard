@@ -91,6 +91,13 @@ sources:
       362-feature trails layer with an incompatible schema (a `MILEAGE`
       field instead of this layer's `TRAILID`/`TRAILSYSTEM`/etc) -- use
       `POS/TrailsDissolve`, not `POS/Trails`.
+      Re-validated live end-to-end 2026-08-01 (T2.1): `ArcGISRestAdapter.
+      fetch()` against this exact config entry returns 130 features
+      (LineString/MultiLineString), same field list plus a few
+      ArcGIS-system columns (ObjectID, Shape__Length, Difficulty,
+      TotalLengthFt, TotalLengthMiles) expected from `outFields=*` -- see
+      tests/acquisition/test_arcgis_rest.py's parametrized T2.1 live
+      smoke tests.
 
   - name: boco_critical_wildlife_habitats
     source_type: real
@@ -105,6 +112,8 @@ sources:
       feature count exactly. Feeds its own proximity scoring input
       (dist_habitat_m, W_HABITAT) -- architecture 2.4/5.1, not merged with
       wildlife corridors below.
+      Re-validated live end-to-end 2026-08-01 (T2.1): still 77 features
+      (Polygon/MultiPolygon), fields exactly [Name, Description, Acres].
 
   - name: boco_wildlife_corridors
     source_type: real
@@ -119,6 +128,8 @@ sources:
       feature count exactly. Feeds its own proximity scoring input
       (dist_corridor_m, W_CORRIDOR) -- architecture 2.4/5.1, distinct from
       critical wildlife habitats above.
+      Re-validated live end-to-end 2026-08-01 (T2.1): still 3 features
+      (Polygon), fields exactly [Name, Description, Acres].
 
   - name: boco_county_roads
     source_type: real

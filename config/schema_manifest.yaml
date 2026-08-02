@@ -1,0 +1,55 @@
+# Per-source expected-schema manifest (T2.6, architecture 5.2, FR-2.4).
+#
+# One entry per source name, listing the attribute field names (excluding
+# `geometry` and the standard provenance columns normalize() stamps on
+# every record -- source_name/source_type/ingested_at/run_id) that source
+# is expected to carry. src/etl/normalize.py's `check_expected_schema()`
+# compares a source's actual raw-input columns against this list: a
+# missing or unexpected field marks the run "degraded" (fail-loud, never
+# silently coerced) rather than raising -- a schema drift is worth
+# knowing about, not worth crashing the whole run over (architecture 3.1's
+# "partial-failure tolerant" posture, applied to schema drift instead of
+# adapter failure).
+#
+# This is deliberately opt-in at the normalize() call site (an
+# `expected_fields` argument, loaded here via `load_expected_schema()`) --
+# not every caller (e.g. ad hoc test fixtures) needs schema enforcement,
+# and wiring it into every live pipeline call is a src/pipeline/run.py
+# concern (T2.15's full orchestrator), not normalize()'s own.
+#
+# Fields below match each source's config/sources.yaml `outfields` list
+# where one is configured (the exact fields requested from the live
+# portal); for boco_trailsegs, which has no `outfields` narrowing (see
+# that entry's notes in config/sources.yaml -- defaults to `outFields=*`),
+# the fields are the actual attribute columns T1.2/T2.1's live
+# investigation observed on that layer.
+
+schemas:
+  boco_trailheads:
+    fields: [TrailheadName, Location, LocationDescription]
+
+  boco_trailsegs:
+    fields:
+      [
+        TRAILNAME,
+        TRAILID,
+        TRAILSYSTEM,
+        TRAILTYPE,
+        BIKES,
+        ELECTRICBIKE,
+        DOGS,
+        HORSES,
+        PARKGROUP,
+      ]
+
+  boco_critical_wildlife_habitats:
+    fields: [Name, Description, Acres]
+
+  boco_wildlife_corridors:
+    fields: [Name, Description, Acres]
+
+  boco_county_roads:
+    fields: [PAVETYPE, STREET_NAME, CR]
+
+  synthetic_moose_sightings:
+    fields: [sighting_id]
