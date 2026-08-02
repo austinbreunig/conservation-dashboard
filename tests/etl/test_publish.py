@@ -36,8 +36,10 @@ from shapely.geometry import Point
 
 from etl.normalize import PROJECT_CRS, normalize
 from etl.publish import (
+    SCORING_GRID_LAYER_NAME,
     TRAILHEADS_LAYER_NAME,
     build_manifest,
+    publish_run,
     publish_trailheads,
     read_layer_geoparquet,
     read_manifest,
@@ -105,6 +107,110 @@ def test_build_manifest_rejects_unrecognized_status():
     """
     with pytest.raises(ValueError, match="status"):
         build_manifest(run_id="run-abc", status="succes", layer_counts={})  # type: ignore[arg-type]
+
+
+def test_build_manifest_full_mvp_schema_carries_real_grid_and_scoring_values():
+    """T2.14: grid_config/scoring_config_version/quarantined counts hold
+    real values, not the M1.5 null placeholders, when a caller passes
+    them."""
+    manifest = build_manifest(
+        run_id="run-abc",
+        status="success",
+        layer_counts={"boco_trailheads": 38, "boco_trailsegs": 130},
+        quarantine_counts={"boco_trailheads": 2},
+        grid_config={"cell_size_m": 500, "cell_count": 8690},
+        scoring_config_version="abc123",
+    )
+
+    assert manifest["grid_config"] == {"cell_size_m": 500, "cell_count": 8690}
+    assert manifest["scoring_config_version"] == "abc123"
+    assert manifest["layers"]["boco_trailheads"] == {"fetched": 38, "quarantined": 2}
+    # A layer with no quarantine_counts entry still gets the key, as None.
+    assert manifest["layers"]["boco_trailsegs"] == {"fetched": 130, "quarantined": None}
+
+
+# ---------------------------------------------------------------------------
+# T2.14 -- publish_run() (full MVP publish)
+# ---------------------------------------------------------------------------
+
+
+def _sample_layer(n: int = 2) -> gpd.GeoDataFrame:
+    raw = gpd.GeoDataFrame(
+        {"x": list(range(n))},
+        geometry=[Point(-105.30 + i * 0.01, 40.02) for i in range(n)],
+        crs="EPSG:4326",
+    )
+    return normalize(raw, source_name="boco_trailheads", source_type="real", run_id="run-xyz")
+
+
+def test_publish_run_writes_scoring_grid_and_every_layer(tmp_path):
+    current_prefix = str(tmp_path / "current")
+    layers = {"boco_trailheads": _sample_layer(2), "boco_county_roads": _sample_layer(3)}
+    scoring_grid = _sample_layer(5)
+
+    result = publish_run(
+        run_id="run-xyz",
+        scoring_grid=scoring_grid,
+        layers=layers,
+        layer_counts={"boco_trailheads": 2, "boco_county_roads": 3},
+        grid_config={"cell_size_m": 500, "cell_count": 5},
+        scoring_config_version="abc123",
+        current_prefix=current_prefix,
+    )
+
+    expected_layers = {"boco_trailheads", "boco_county_roads", SCORING_GRID_LAYER_NAME}
+    assert set(result.layer_paths) == expected_layers
+    for path in result.layer_paths.values():
+        assert Path(path).exists()
+    assert Path(result.manifest_path).exists()
+    assert result.manifest["grid_config"] == {"cell_size_m": 500, "cell_count": 5}
+    assert result.manifest["scoring_config_version"] == "abc123"
+
+
+def test_publish_run_writes_manifest_even_with_no_scoring_grid(tmp_path):
+    """A total-failure run (grid/scoring never completed) still gets a
+    manifest -- architecture 5.5: "always writes a manifest, even on ...
+    total failure"."""
+    current_prefix = str(tmp_path / "current")
+
+    result = publish_run(
+        run_id="run-bad",
+        scoring_grid=None,
+        layers={},
+        layer_counts={"boco_trailheads": None},
+        status="failed",
+        current_prefix=current_prefix,
+    )
+
+    assert SCORING_GRID_LAYER_NAME not in result.layer_paths
+    assert Path(result.manifest_path).exists()
+    assert read_manifest(current_prefix=current_prefix)["status"] == "failed"
+
+
+def test_publish_run_overwrites_current_on_rerun(tmp_path):
+    current_prefix = str(tmp_path / "current")
+    publish_run(
+        run_id="run-1",
+        scoring_grid=_sample_layer(5),
+        layers={"boco_trailheads": _sample_layer(2)},
+        layer_counts={"boco_trailheads": 2},
+        current_prefix=current_prefix,
+    )
+    publish_run(
+        run_id="run-2",
+        scoring_grid=_sample_layer(3),
+        layers={"boco_trailheads": _sample_layer(1)},
+        layer_counts={"boco_trailheads": 1},
+        current_prefix=current_prefix,
+    )
+
+    manifest_files = list((tmp_path / "current").glob("run_manifest.json"))
+    assert len(manifest_files) == 1
+    reread_grid = read_layer_geoparquet(
+        current_prefix=current_prefix, layer_name=SCORING_GRID_LAYER_NAME
+    )
+    assert len(reread_grid) == 3
+    assert read_manifest(current_prefix=current_prefix)["run_id"] == "run-2"
 
 
 def test_write_and_read_layer_geoparquet_round_trips_locally(tmp_path):

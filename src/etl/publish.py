@@ -1,25 +1,29 @@
 """Publish -- `src/etl/publish.py` (architecture Section 5.5, FR-6.2).
 
-T1.14 (Milestone 1.5, Progressive Tracer) scope, per spec/tasks.md: the
-**single-layer subset** of T2.14's full publish step -- publishes only
-`boco_trailheads`, the layer T1.7/T1.8 already confirmed works live
-(spec/tasks.md's "Why narrowed to a single layer" note, Milestone 1.5
-section). No join output, no grid/scoring output, no second source --
-those land at T2.14/MVP once grid (T2.8) and scoring (T2.13) exist.
+`publish_trailheads()` is T1.14 (Milestone 1.5)'s original single-layer
+subset -- publishes only `boco_trailheads`, kept as-is (still used by
+`pipeline.run.run_poc()`) rather than removed once the full-scope
+function existed.
 
-Architecture 5.5's two responsibilities, both implemented here at
-single-layer scope:
+`publish_run()` (T2.14, MVP) is the full-scope version architecture 5.5
+describes: copies the run's output GeoParquet files (`scoring_grid` +
+every normalized source layer, all still carrying `source_type`) to a
+stable `current/` prefix, then writes `current/run_manifest.json`
+(architecture Section 9) -- the single thing the dashboard reads to know
+both the data and the run's health. Always writes a manifest, even on
+partial failure (status `"degraded"`) or total failure (status
+`"failed"`), so FR-6.2's staleness signal has something to show rather
+than silence.
 
-1. Write the run's `boco_trailheads` GeoParquet to a stable `current/`
-   prefix -- overwriting whatever was there before (idempotent by
-   construction: every run writes to the exact same path, so a second
-   run cleanly replaces the first with no manual reset step, per the
-   M1.5 gate's third bullet).
-2. Always write `current/run_manifest.json` (architecture Section 9) --
-   even when `status` is `"degraded"`/`"failed"` -- so FR-6.2's staleness
-   signal (dashboard shows last-known-good data plus a manifest
-   timestamp that stops advancing) has something to read rather than
-   silence.
+**"Atomic" `current/` update.** Neither a local filesystem nor GCS offers
+real multi-object transactions, so "atomic" here means: every data file
+(scoring grid + each layer) is written *before* the manifest, and the
+manifest is written last, exactly matching `publish_trailheads()`'s
+existing ordering. A reader that checks the manifest's `run_timestamp_utc`
+before reading data never observes a half-updated `current/`: if the
+manifest hasn't advanced yet, every data file underneath it is still
+completely intact from the *previous* run, since this run hasn't
+overwritten the manifest (its own "done" signal) yet.
 
 **GCS access.** `current_prefix` defaults to the real bucket provisioned
 at T1.13 (`gs://ab-spatial-cd-data/current`, see
@@ -34,19 +38,15 @@ Default Credentials in production/Cloud Run, per architecture Section 7's
 pipeline service account) uniformly, so this module's logic is identical
 regardless of target.
 
-**Manifest schema at T1.14 (subset of architecture Section 9's full
-MVP schema):** `run_id`, `run_timestamp_utc`, `status`, and a `layers`
-dict keyed by source name holding a `fetched` count. `grid_config` and
-`scoring_config_version` -- both named in architecture Section 9 and
-T2.14's row -- are written as `null`: grid (T2.8) and scoring (T2.13)
-don't exist yet at M1.5, so there is nothing true to report for those
-keys. T2.14 fills them in once those stages exist; the schema shape
-(top-level keys present, just `null`) is chosen so the dashboard's
-manifest-reading code (T1.16/T2.16) never has to special-case a missing
-key between M1.5 and M2. Likewise `layers.<name>.quarantined` is `null`
-rather than `0` -- quarantine routing (T2.5) doesn't exist yet either, so
-`null` means "not tracked at this milestone," not "confirmed zero
-quarantined records."
+**Manifest schema (architecture Section 9's full MVP schema, T2.14).**
+`run_id`, `run_timestamp_utc`, `status`, a `layers` dict keyed by source
+name holding `fetched`/`quarantined` counts, `grid_config`
+(`cell_size_m`/`cell_count`), and `scoring_config_version`. `grid_config`/
+`scoring_config_version`/`layers.<name>.quarantined` all default to
+`None` in `build_manifest()` -- `publish_trailheads()` (M1.5, before
+grid/scoring/quarantine-counting existed) still gets exactly the same
+`null`-shaped subset it always has, while `publish_run()` (T2.14) passes
+the real values through.
 """
 
 from __future__ import annotations
@@ -72,6 +72,9 @@ DEFAULT_CURRENT_PREFIX = "gs://ab-spatial-cd-data/current"
 # generalizes this once grid/scoring exist to publish for real.
 TRAILHEADS_LAYER_NAME = "boco_trailheads"
 
+# T2.14: the scoring grid's own layer name under current/.
+SCORING_GRID_LAYER_NAME = "scoring_grid"
+
 RunStatus = Literal["success", "degraded", "failed"]
 _VALID_STATUSES = frozenset(("success", "degraded", "failed"))
 
@@ -84,6 +87,19 @@ class PublishResult:
     what happened."""
 
     layer_path: str
+    manifest_path: str
+    manifest: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PublishRunResult:
+    """Return value of `publish_run()` (T2.14) -- the multi-layer
+    analogue of `PublishResult`. `layer_paths` is keyed by layer name
+    (including `SCORING_GRID_LAYER_NAME`), so callers/tests can check
+    exactly which layers were actually written without re-deriving
+    paths."""
+
+    layer_paths: dict[str, str]
     manifest_path: str
     manifest: dict[str, Any] = field(default_factory=dict)
 
@@ -107,16 +123,26 @@ def build_manifest(
     run_id: str,
     status: RunStatus,
     layer_counts: dict[str, int | None],
+    quarantine_counts: dict[str, int] | None = None,
+    grid_config: dict[str, Any] | None = None,
+    scoring_config_version: str | None = None,
     run_timestamp_utc: str | None = None,
 ) -> dict[str, Any]:
-    """Build the `run_manifest.json` dict (architecture Section 9), at
-    T1.14's single-layer subset of the full MVP schema (see module
-    docstring for exactly which keys are `null` at this milestone and
-    why).
+    """Build the `run_manifest.json` dict (architecture Section 9).
 
     `layer_counts` maps source name -> fetched feature count (e.g.
-    `{"boco_trailheads": 38}`). Raises `ValueError` for an unrecognized
-    `status` -- architecture Section 9 defines exactly three values
+    `{"boco_trailheads": 38}`); `quarantine_counts` maps source name ->
+    quarantined-record count, defaulting to `None` per source when not
+    given (M1.5's `publish_trailheads()` doesn't pass this -- quarantine
+    counting is a T2.14/full-orchestrator concern). `grid_config`
+    (`{"cell_size_m": ..., "cell_count": ...}`) and
+    `scoring_config_version` default to `None` for the same reason --
+    `publish_trailheads()` predates grid/scoring existing at all, so its
+    manifests carry the same `null`-shaped subset they always have;
+    `publish_run()` (T2.14) passes the real values through.
+
+    Raises `ValueError` for an unrecognized `status` -- architecture
+    Section 9 defines exactly three values
     (`success`/`degraded`/`failed`); silently accepting anything else
     would let a typo produce a manifest the dashboard's staleness logic
     (FR-6.2) doesn't actually recognize.
@@ -129,18 +155,18 @@ def build_manifest(
     timestamp = (
         run_timestamp_utc if run_timestamp_utc is not None else datetime.now(UTC).isoformat()
     )
+    quarantine_counts = quarantine_counts or {}
 
     return {
         "run_id": run_id,
         "run_timestamp_utc": timestamp,
         "status": status,
         "layers": {
-            name: {"fetched": count, "quarantined": None} for name, count in layer_counts.items()
+            name: {"fetched": count, "quarantined": quarantine_counts.get(name)}
+            for name, count in layer_counts.items()
         },
-        # Not applicable until T2.8 (grid)/T2.13 (scoring) exist -- see
-        # module docstring. T2.14 replaces these `None`s with real values.
-        "grid_config": None,
-        "scoring_config_version": None,
+        "grid_config": grid_config,
+        "scoring_config_version": scoring_config_version,
     }
 
 
@@ -270,3 +296,60 @@ def publish_trailheads(
     )
 
     return PublishResult(layer_path=layer_path, manifest_path=manifest_path, manifest=manifest)
+
+
+def publish_run(
+    *,
+    run_id: str,
+    scoring_grid: gpd.GeoDataFrame | None,
+    layers: dict[str, gpd.GeoDataFrame],
+    layer_counts: dict[str, int | None],
+    quarantine_counts: dict[str, int] | None = None,
+    grid_config: dict[str, Any] | None = None,
+    scoring_config_version: str | None = None,
+    status: RunStatus = "success",
+    current_prefix: str = DEFAULT_CURRENT_PREFIX,
+    storage_options: dict[str, Any] | None = None,
+) -> PublishRunResult:
+    """Publish one full MVP run (T2.14): every successfully-normalized
+    source layer in `layers` (keyed by source name) plus `scoring_grid`,
+    then `current/run_manifest.json` last (see module docstring's
+    "atomic" note for why that ordering matters).
+
+    `scoring_grid` may be `None` -- e.g. a run so degraded that grid/
+    scoring themselves never completed (`status="failed"`). In that case
+    no `scoring_grid.geoparquet` is written, but the manifest still is
+    (architecture 5.5: "always writes a manifest, even on ... total
+    failure"), so FR-6.2's staleness signal has something to read.
+    `layers` may likewise be a subset of all seven sources -- a source
+    that failed to fetch entirely simply has no entry (its
+    `layer_counts[name]` should be `None` in that case).
+    """
+    layer_paths: dict[str, str] = {}
+    for name, gdf in layers.items():
+        layer_paths[name] = write_layer_geoparquet(
+            gdf, current_prefix=current_prefix, layer_name=name, storage_options=storage_options
+        )
+    if scoring_grid is not None:
+        layer_paths[SCORING_GRID_LAYER_NAME] = write_layer_geoparquet(
+            scoring_grid,
+            current_prefix=current_prefix,
+            layer_name=SCORING_GRID_LAYER_NAME,
+            storage_options=storage_options,
+        )
+
+    manifest = build_manifest(
+        run_id=run_id,
+        status=status,
+        layer_counts=layer_counts,
+        quarantine_counts=quarantine_counts,
+        grid_config=grid_config,
+        scoring_config_version=scoring_config_version,
+    )
+    manifest_path = write_manifest(
+        manifest,
+        current_prefix=current_prefix,
+        storage_options=storage_options,
+    )
+
+    return PublishRunResult(layer_paths=layer_paths, manifest_path=manifest_path, manifest=manifest)
