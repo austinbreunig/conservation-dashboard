@@ -183,8 +183,8 @@ here rather than reopening that document's sign-off):
 | ID | Task | Deliverable | Depends on | Traces to | Validation | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | T2.1 | Wire trail-segments, critical-habitat, corridor config entries + validate each end-to-end | `config/sources.yaml` additions | T1.8 | FR-1.5 | Per-layer `fetch()` unit test against live/recorded endpoint; geometry type matches T2.8's expected-schema manifest | — |
-| T2.2 | **Acquire county-roads GeoJSON or confirm live `FeatureServer` layer id/URL** | `data/raw/boco_county_roads.geojson` or a confirmed endpoint URL recorded in `config/sources.yaml` | — | FR-1.8, `plan.md` Scope | Consultant action item, not an engineering task — no automated validation possible until the artifact exists | 🔒 **BLOCKED** — pending consultant acquisition |
-| T2.3 | Wire county-roads config entry + validate fetch end-to-end | `config/sources.yaml` addition | T2.2 | FR-1.8 | `fetch()` unit test against the real/recorded roads endpoint | 🔒 **BLOCKED** (depends on T2.2) |
+| T2.2 | ~~Acquire county-roads GeoJSON or confirm live `FeatureServer` layer id/URL~~ | `data/raw/boco_county_roads.geojson`, confirmed endpoint recorded in `config/sources.yaml` | — | FR-1.8, `plan.md` Scope | Consultant action item | ✅ done 2026-07-27 — `boco_county_roads` entry added (`genRoad_Map_Roads/FeatureServer`, 2,748 features, confirmed live), single roads source covers all county roads, no separate layer needed |
+| T2.3 | Wire county-roads config entry + validate fetch end-to-end | `config/sources.yaml` addition | T2.2 | FR-1.8 | `fetch()` unit test against the real/recorded roads endpoint | ✅ done 2026-07-27 — `tests/test_sources_config.py::test_boco_county_roads_entry_present_and_wired` |
 
 ### 2B. Normalize extensions
 
@@ -202,7 +202,7 @@ here rather than reopening that document's sign-off):
 | T2.8 | Fishnet grid generator over the buffered-bounding-hull AOI (arch 2.2.1) + cache keyed by AOI+resolution hash | `src/etl/grid.py`, `reference/grid_<cell_size>.geoparquet` | T2.1 | FR-3.4, arch 2.2/2.2.1/5.3 | Unit test: ~7,700–10,000 cells at 500 m default; re-running with unchanged config is a cache-hit (no regeneration); changing `GRID_CELL_SIZE_M` produces a new cache key/file. Uses the buffered bounding hull of the four non-road ArcGIS layers, per 2.2.1 — **not** the county boundary polygon, which is Refinement-tagged (see T3.2). |
 | T2.9 | Per-cell `sighting_count` (buffered density) | `src/etl/grid.py` | T2.8, T1.6 | arch 2.4 | Unit test: synthetic points within `DENSITY_SEARCH_BUFFER_M` of a cell increment its count | — |
 | T2.10 | Per-cell `dist_habitat_m`, `dist_corridor_m`, `dist_trail_m` | `src/etl/grid.py` | T2.8, T2.1 | FR-3.4, arch 2.4 | Unit test: nearest-distance correctness against a small fixture geometry | — |
-| T2.11 | Per-cell `dist_road_m` | `src/etl/grid.py` | T2.3 | FR-3.4, FR-1.8 | Unit test: same nearest-distance function as T2.10, parameterized by layer — no new code required once T2.3 unblocks, only a config/wiring change | 🔒 **BLOCKED** (depends on T2.3, i.e. transitively on T2.2) |
+| T2.11 | Per-cell `dist_road_m` | `src/etl/grid.py` | T2.3 | FR-3.4, FR-1.8 | Unit test: same nearest-distance function as T2.10, parameterized by layer — no new code required once T2.3 unblocks, only a config/wiring change | — (unblocked 2026-07-27, T2.3 done) |
 | T2.12 | Grid/join idempotency (`run_id`-scoped overwrite) | `src/etl/grid.py` | T2.9, T2.10, T2.11 | FR-3.3 | Running the pipeline twice against the same input produces matching schema/row-count on the second run, no manual reset step | — |
 
 ### 2D. Scoring — `src/scoring/score.py`
@@ -250,10 +250,9 @@ here rather than reopening that document's sign-off):
 | T2.26 | Document dashboard-auth default posture + exact IAM/IAP enablement steps | `docs/decisions/dashboard-auth.md` | — | NFR-9, OR-5, arch 3.2 | Doc records the v1 default (unauthenticated Cloud Run invocations, small-trusted-audience assumption per `plan.md`) and the exact command/steps to flip to IAM-restricted or IAP-fronted access later. Explicitly marked "open pending `plan.md` Open Question 2 — not required for MVP sign-off." This task is a documentation deliverable, not a blocking implementation task. |
 
 **M2 gate:** every box under `spec/requirements.md` "MVP — Done When" is
-checked, **with the explicit carve-out** that the "all six confirmed
-sources... integrated" bullet and the road-proximity portion of the
-scoring-grid bullet remain unmet until T2.2/T2.3/T2.11 unblock (see
-"Blocked Tasks Summary").
+checked. The carve-out this section previously noted (sources/road-proximity
+blocked on county-roads acquisition) no longer applies — T2.2/T2.3 are done
+and T2.11 is unblocked (see "Blocked Tasks Summary").
 
 ---
 
@@ -283,12 +282,10 @@ scoring-grid bullet remain unmet until T2.2/T2.3/T2.11 unblock (see
       │               │
       │        ┌──────┴───────────────────────┐
       │        ▼                               ▼
-      │  [T2.1 remaining 3 layers]      [T2.2 🔒 acquire roads]
-      │        │                               │
-      │        │                        [T2.3 🔒 wire roads]
+      │  [T2.1 remaining 3 layers]      [T2.2/T2.3 roads — done]
       │        │                               │
       └────────┴──────▶ [T1.9/T2.4-T2.7 normalize] ──▶ [T2.8 grid] ──┬──▶ [T2.9/T2.10 non-road proximity]
-                                                                        └──▶ [T2.11 🔒 dist_road_m]
+                                                                        └──▶ [T2.11 dist_road_m]
                                                                                     │
                                                                         [T2.12 idempotency] ◀┘
                                                                                     │
@@ -314,13 +311,13 @@ deploy, carrying no join/grid/scoring forward from M1.
 
 ## Blocked Tasks Summary
 
-**Blocked on county-roads acquisition (T2.2):**
-* T2.3 — wire county-roads adapter config
-* T2.11 — per-cell `dist_road_m`
-* T2.13 — *fully correct* MVP scoring (can be unit-tested with a stub in
-  the meantime, per its own row above)
-* The MVP "all six confirmed sources integrated" and full road-proximity
-  scoring bullets of the M2 gate
+**County-roads acquisition (T2.2) — resolved 2026-07-27, no longer blocking:**
+`boco_county_roads` is a confirmed live ArcGIS REST entry in
+`config/sources.yaml` (2,748 features, `genRoad_Map_Roads/FeatureServer`),
+one source covering all county roads — no separate/additional roads layer
+needed. T2.3 (wire + validate) is done. T2.11 (`dist_road_m`) and full
+MVP scoring (T2.13) are unblocked and open for M2 implementation like any
+other task, not gated on acquisition anymore.
 
 **Blocked on county-boundary acquisition (T3.2):**
 * Precise AOI clipping (replaces the buffered bounding-hull approximation
