@@ -83,10 +83,58 @@ will consume.
 * **T1.14** (single-layer publish) can now target
   `gs://ab-spatial-cd-data/current/` for real — no more local-disk
   standing in for GCS.
-* **T1.15**'s service account, IAM binding, and HMAC key are provisioned
-  (above) — remaining T1.15 scope is the container image and the actual
-  Cloud Run Job/service deploy (`--service-account=cd-runtime@...`), not
-  yet done.
 * **T2.17** (MVP-scope bucket provisioning) extends this bucket rather
   than re-deciding name/region/lifecycle — those are now settled, not
   open questions.
+
+## Least-privilege IAM split — decided 2026-08-02 (T2.17/T2.18, issue #5)
+
+`cd-runtime` (above) is retired. Nothing had been deployed against it yet
+(T1.15's Cloud Run Job/service deploy was still pending), so the split
+could happen cleanly with no live dependency to migrate. It's replaced by
+two purpose-scoped service accounts, per architecture Section 7's
+original (deferred) split:
+
+| Service account | Role | Scope |
+| --- | --- | --- |
+| `cd-pipeline@ab-spatial-cd.iam.gserviceaccount.com` | `roles/storage.objectAdmin` | Whole bucket (RW on all five prefixes) |
+| `cd-pipeline@...` | `roles/secretmanager.secretAccessor` | Its own two HMAC secrets only (below) |
+| `cd-dashboard@ab-spatial-cd.iam.gserviceaccount.com` | `roles/storage.objectViewer` | Conditional binding, `current/` prefix only |
+
+The dashboard binding uses a GCS IAM condition:
+
+```
+resource.name.startsWith("projects/_/buckets/ab-spatial-cd-data/objects/current/")
+```
+
+**Verified live** (via `--impersonate-service-account`, temporary
+`serviceAccountTokenCreator` grant removed immediately after testing):
+`cd-dashboard` can `storage.objects.get` `current/.keep` but is denied
+`get` on `raw/.keep`, `processed/.keep`, and `quarantine/.keep`.
+
+**Known GCS limitation surfaced during verification:** conditional
+bindings scope `objects.get` per-prefix but do **not** scope
+`objects.list` — list is evaluated against the bucket resource as a
+whole, so `cd-dashboard` cannot list anything in the bucket, including
+`current/` itself. This is fine for the dashboard's actual read path
+(known object keys under `current/`, not directory listing) but means
+"RO on `current/`" is get-only, not list-and-get.
+
+**HMAC key**: rather than reuse `cd-runtime`'s existing HMAC
+credentials (they authenticate as `cd-runtime`, which no longer has
+bucket access once retired), a fresh HMAC key was minted for
+`cd-pipeline` and stored as new Secret Manager secrets
+`cd-pipeline-hmac-access-id` / `cd-pipeline-hmac-secret`, replacing
+`cd-runtime-hmac-access-id` / `cd-runtime-hmac-secret` (deleted). Same
+role as `cd-runtime`'s HMAC key played in T1.15 — DuckDB's native
+`gs://` `httpfs` path needs S3-interop HMAC auth; ADC via the attached
+SA still covers the pipeline's own `gcsfs` calls with no key needed.
+
+## Downstream implications (T2.17/T2.18)
+
+* T1.15/T1.16's remaining scope (Cloud Run Job/service deploy) should
+  attach `cd-pipeline` to the pipeline job and `cd-dashboard` to the
+  dashboard service, not `cd-runtime`.
+* Any future code path reading `CREATE SECRET (TYPE gcs, ...)` for
+  DuckDB should point at `cd-pipeline-hmac-access-id`/`-secret`, not the
+  now-deleted `cd-runtime-hmac-*` secrets.
