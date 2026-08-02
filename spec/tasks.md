@@ -164,12 +164,11 @@ here rather than reopening that document's sign-off):
 * [x] The deployed dashboard (Cloud Run service, not `localhost`) renders
       that data by reading `current/` via DuckDB `httpfs` — not local disk.
       (T1.16, confirmed live 2026-08-01.)
-* [ ] Re-running the Cloud Run Job a second time overwrites `current/`
-      cleanly — no manual reset, no orphaned partial state. (Overwrite is
-      true by construction — `write_layer_geoparquet`/`write_manifest`
-      always target the same path — but not yet re-verified with an
-      actual second Job execution against the real bucket; leaving
-      unchecked until that manual run happens.)
+* [x] Re-running the Cloud Run Job a second time overwrites `current/`
+      cleanly — no manual reset, no orphaned partial state. (Confirmed
+      2026-08-02: execution `conservation-dashboard-pipeline-fwpqr`
+      overwrote both objects at the same paths, timestamp advanced
+      2026-07-31T22:48:30Z → 2026-08-02T01:42:23Z, still 38 trailheads.)
 * [x] A short doc under `docs/decisions/` records the actual bucket
       name/prefixes/service account used, so T2.17/T2.18 at MVP extend this
       rather than re-deciding it. (`docs/decisions/gcs-bucket-provisioning.md`,
