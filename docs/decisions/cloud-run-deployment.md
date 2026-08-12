@@ -98,6 +98,9 @@ precluded here.
 
 ## Manual-trigger only — no Cloud Scheduler
 
+*(Superseded 2026-08-12 — see "Cloud Scheduler — monthly automation
+(T2.21, issue #13)" below. Kept for history.)*
+
 The Cloud Run Job is created but not wired to Cloud Scheduler. Per
 `spec/tasks.md`'s M1.5 scope-narrowing section, weekly automatic
 triggering is explicitly T2.21 (deferred to MVP). Running the pipeline
@@ -161,7 +164,7 @@ The pipeline Job needed no change for this task — it already writes via
 (`cd-runtime` already held `secretAccessor` on both secrets from
 provisioning).
 
-## Downstream implications
+## Downstream implications (T1.15/T1.16)
 
 * **T2.16** (multi-layer dashboard read, scoring grid/choropleth,
   context layers, synthetic sightings layer, methodology note,
@@ -173,4 +176,100 @@ provisioning).
   service accounts, Cloud Scheduler, full observability) extend this
   image/Job/service rather than re-deciding the base image strategy,
   entrypoint-override pattern, or Artifact Registry repo — those are now
-  settled, not open questions.
+  settled, not open questions. Done as of 2026-08-12 — see below.
+
+## MVP deploy — full pipeline + dashboard (T2.19–T2.22, issues #12/#13)
+
+Status: done 2026-08-12. Traces to `spec/tasks.md` T2.19, T2.20, T2.21,
+T2.22, `spec/architecture.md` Section 7/8, and issues #12 (full deploy)
+and #13 (Cloud Scheduler).
+
+### Summary
+
+| Property | Value |
+| --- | --- |
+| Image | `us-central1-docker.pkg.dev/ab-spatial-cd/conservation-dashboard/app:mvp` |
+| Cloud Run Job (pipeline) | `conservation-dashboard-pipeline`, `--service-account=cd-pipeline@ab-spatial-cd.iam.gserviceaccount.com`, entrypoint `python -m pipeline.run --stage mvp` (T2.15's full orchestrator — not `--stage poc`) |
+| Cloud Run service (dashboard) | `conservation-dashboard`, `--service-account=cd-dashboard@ab-spatial-cd.iam.gserviceaccount.com`, entrypoint unchanged from T1.16, `--min-instances=0`, `--allow-unauthenticated`, `--memory=2Gi --cpu=2` (see "Memory sizing" below) |
+| Cloud Scheduler | `conservation-dashboard-pipeline-scheduler`, cron `0 6 1 * *` (monthly — issue #13's body said weekly, Austin's comment overrode it), OAuth via `cd-scheduler@ab-spatial-cd.iam.gserviceaccount.com` scoped to `roles/run.invoker` on the pipeline Job only |
+
+### Split service accounts, now actually attached
+
+`cd-runtime` was retired and replaced by `cd-pipeline`/`cd-dashboard` at
+the IAM-provisioning level back at T2.17/T2.18
+(`docs/decisions/gcs-bucket-provisioning.md`'s "Least-privilege IAM
+split" section) — but nothing had been deployed against the new pair
+until this task attached them to the actual Cloud Run resources.
+Re-verified live post-deploy (same method as issue #5's original
+check — temporary `serviceAccountTokenCreator` impersonation grant,
+removed immediately after): `cd-dashboard` can read `current/.keep` but
+is denied on `raw/.keep`, `processed/.keep`, `quarantine/.keep`.
+
+### cd-dashboard mints its own HMAC key, not a shared one
+
+The dashboard's DuckDB `httpfs` reads need HMAC credentials (see T1.16's
+"Why HMAC, not ADC" above), but the HMAC secrets provisioned at T2.17/
+T2.18 (`cd-pipeline-hmac-access-id`/`-secret`) were only ever granted
+`secretAccessor` to `cd-pipeline` — the pipeline doesn't actually need
+them (it writes via `gcsfs`/ADC), and the dashboard, which does need
+HMAC, had no access. Rather than grant `cd-dashboard` access to
+`cd-pipeline`'s secrets, a fresh HMAC key was minted for `cd-dashboard`
+specifically (`gcloud storage hmac create cd-dashboard@...`), stored as
+new secrets `cd-dashboard-hmac-access-id`/`cd-dashboard-hmac-secret`,
+`secretAccessor` bound to `cd-dashboard` only — matching the precedent
+already set when `cd-pipeline` got its own key rather than reusing
+`cd-runtime`'s. Wired into the container as
+`GCS_HMAC_ACCESS_ID`/`GCS_HMAC_SECRET` via `--set-secrets`, same
+mechanism as T1.16.
+
+### Memory sizing — 512Mi default was insufficient
+
+The first dashboard deploy used Cloud Run's default `512Mi`/`1` vCPU (no
+`--memory`/`--cpu` flag). DuckDB (`httpfs`+`spatial` loaded) plus
+Streamlit plus reading the full multi-layer scoring grid on every
+request pushed memory to 550–650MiB, OOM-killing the container in a
+repeating restart loop — visible to a user as an endless "loading" page
+with no map ever rendering, not as any auth/connection error (Cloud Run
+logs showed repeated `Memory limit of 512 MiB exceeded` entries).
+Fixed with `--memory=2Gi --cpu=2`. This is a starting-point sizing, not
+a measured ceiling — revisit if the dashboard grows more layers or
+traffic.
+
+### Cloud Scheduler → Cloud Run Jobs — OAuth against the Admin API, not a Job-reported URL
+
+Cloud Run **Jobs** (unlike Services) expose no `status.address.url` —
+there is nothing on the Job resource itself for Cloud Scheduler to
+target. The real target is the Cloud Run Admin API's `:run` endpoint,
+built from the project **number** (not the project ID):
+
+```
+https://{REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/{PROJECT_NUMBER}/jobs/{JOB_NAME}:run
+```
+
+For this project: `https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/401735191135/jobs/conservation-dashboard-pipeline:run`.
+
+Cloud Scheduler's HTTP target authenticates via **OAuth**
+(`--oauth-service-account-email`/
+`--oauth-token-scope=https://www.googleapis.com/auth/cloud-platform`),
+not an OIDC id-token, against this endpoint — `cd-scheduler`'s
+`roles/run.invoker` binding on the Job (scoped to that Job only) is
+exactly the auth this needs, no broader IAM required. Verified live:
+manually triggering the scheduler (`gcloud scheduler jobs run
+conservation-dashboard-pipeline-scheduler --location us-central1`)
+executed the Job under the `cd-scheduler` identity and
+`run_manifest.json`'s `run_timestamp_utc` advanced. The Scheduler
+resource's next queued `scheduleTime` confirmed the monthly cadence
+(`0 6 1 * *`), not the issue body's original weekly text.
+
+### Downstream implications
+
+* Any future Cloud Scheduler target against a Cloud Run Job elsewhere in
+  this workspace should reuse the `:run` Admin API URI + OAuth pattern
+  above rather than re-discovering it — `status.address.url` will not
+  work for Jobs.
+* Dashboard memory/cpu sizing (`2Gi`/`2` vCPU) is the floor to keep when
+  redeploying the service; dropping back to Cloud Run's `512Mi` default
+  will reproduce the OOM restart loop.
+* `cd-pipeline-hmac-*` and `cd-dashboard-hmac-*` are now two distinct,
+  non-overlapping HMAC credential pairs — don't consolidate them later
+  without a reason; the split matches the SAs' least-privilege intent.
