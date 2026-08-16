@@ -23,6 +23,7 @@ import pytest
 from shapely.geometry import LineString, Point, box
 
 from dashboard.app import (
+    BOUNDARY_LAYER_NAME,
     HABITAT_LAYER_NAME,
     MOOSE_SIGHTINGS_LABEL,
     ROADS_LAYER_NAME,
@@ -113,6 +114,18 @@ def _full_current_prefix(tmp_path, run_id: str = "test-run-001"):
     )
     roads = normalize(roads_raw, source_name=ROADS_LAYER_NAME, source_type="real", run_id=run_id)
     write_layer_geoparquet(roads, current_prefix=current_prefix, layer_name=ROADS_LAYER_NAME)
+
+    boundary_raw = gpd.GeoDataFrame(
+        {"NAME": ["Boulder County"]},
+        geometry=[box(-105.35, 39.95, -105.15, 40.15)],
+        crs="EPSG:4326",
+    )
+    boundary = normalize(
+        boundary_raw, source_name=BOUNDARY_LAYER_NAME, source_type="real", run_id=run_id
+    )
+    write_layer_geoparquet(
+        boundary, current_prefix=current_prefix, layer_name=BOUNDARY_LAYER_NAME
+    )
 
     sightings_raw = gpd.GeoDataFrame(
         {"sighting_id": [0, 1]},
@@ -277,17 +290,20 @@ def test_score_to_color_clips_out_of_range_scores():
 # ---------------------------------------------------------------------------
 
 
-def test_load_scoring_grid_features_excludes_null_score_cells(tmp_path):
+def test_load_scoring_grid_features_includes_null_score_cells_transparently(tmp_path):
     """A cell with `score_0_10 IS NULL` (scoring.score's "no real signal"
-    case) must not appear in the rendered grid at all -- it's a gap, not
-    a false zero."""
+    case) still appears in the rendered grid -- just with a fully
+    transparent fill and no score, so build_deck()'s uniform stroke
+    still traces it as a wireframe square instead of leaving a gap."""
     current_prefix, _ = _full_current_prefix(tmp_path)
     con = create_connection()
 
     features = load_scoring_grid_features(con, current_prefix=current_prefix)
+    by_cell = {f["properties"]["cell_id"]: f for f in features}
 
-    assert len(features) == 2
-    assert {f["properties"]["cell_id"] for f in features} == {0, 1}
+    assert set(by_cell) == {0, 1, 2}
+    assert by_cell[2]["properties"]["score_0_10"] is None
+    assert by_cell[2]["properties"]["fill_color"] == [0, 0, 0, 0]
 
 
 def test_load_scoring_grid_features_carry_geojson_geometry_score_and_color(tmp_path):
@@ -307,7 +323,10 @@ def test_load_scoring_grid_features_carry_geojson_geometry_score_and_color(tmp_p
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("layer_name", [TRAILSEGS_LAYER_NAME, HABITAT_LAYER_NAME, ROADS_LAYER_NAME])
+@pytest.mark.parametrize(
+    "layer_name",
+    [TRAILSEGS_LAYER_NAME, HABITAT_LAYER_NAME, ROADS_LAYER_NAME, BOUNDARY_LAYER_NAME],
+)
 def test_load_context_layer_features_returns_one_geojson_feature_per_row(tmp_path, layer_name):
     current_prefix, _ = _full_current_prefix(tmp_path)
     con = create_connection()
@@ -375,6 +394,9 @@ def _decks_layer_ids(deck):
 
 def _load_all_layers(con, current_prefix):
     scoring_features = load_scoring_grid_features(con, current_prefix=current_prefix)
+    boundary_features = load_context_layer_features(
+        con, BOUNDARY_LAYER_NAME, current_prefix=current_prefix
+    )
     view_center = compute_view_center(con, current_prefix=current_prefix)
     trail_points = load_point_layer(
         con, TRAILHEADS_LAYER_NAME, current_prefix=current_prefix, extra_columns=("TrailheadName",)
@@ -389,7 +411,7 @@ def _load_all_layers(con, current_prefix):
         "roads": load_context_layer_features(con, ROADS_LAYER_NAME, current_prefix=current_prefix),
     }
     moose = load_point_layer(con, SYNTHETIC_SOURCE_NAME, current_prefix=current_prefix)
-    return scoring_features, view_center, trail_points, context_layers, moose
+    return scoring_features, boundary_features, view_center, trail_points, context_layers, moose
 
 
 def test_build_deck_includes_moose_layer_even_with_every_context_toggle_off(tmp_path):
@@ -398,13 +420,14 @@ def test_build_deck_includes_moose_layer_even_with_every_context_toggle_off(tmp_
     """
     current_prefix, _ = _full_current_prefix(tmp_path)
     con = create_connection()
-    scoring_features, view_center, trail_points, context_layers, moose = _load_all_layers(
-        con, current_prefix
+    scoring_features, boundary_features, view_center, trail_points, context_layers, moose = (
+        _load_all_layers(con, current_prefix)
     )
 
     deck = build_deck(
         view_center,
         scoring_features,
+        boundary_features,
         trail_points,
         moose,
         context_layers,
@@ -413,9 +436,10 @@ def test_build_deck_includes_moose_layer_even_with_every_context_toggle_off(tmp_
         show_roads=False,
     )
 
-    # Scoring grid (always on) + moose sightings (always on) = 2 layers,
-    # none of the three togglable context layers present.
-    assert len(deck.layers) == 2
+    # Boundary (always on) + scoring grid (always on) + moose sightings
+    # (always on) = 3 layers, none of the three togglable context layers
+    # present.
+    assert len(deck.layers) == 3
     moose_layer_data = deck.layers[-1].data
     assert all(row.get("tooltip") == MOOSE_SIGHTINGS_LABEL for row in moose_layer_data)
 
@@ -423,13 +447,14 @@ def test_build_deck_includes_moose_layer_even_with_every_context_toggle_off(tmp_
 def test_build_deck_includes_context_layers_when_toggled_on(tmp_path):
     current_prefix, _ = _full_current_prefix(tmp_path)
     con = create_connection()
-    scoring_features, view_center, trail_points, context_layers, moose = _load_all_layers(
-        con, current_prefix
+    scoring_features, boundary_features, view_center, trail_points, context_layers, moose = (
+        _load_all_layers(con, current_prefix)
     )
 
     deck = build_deck(
         view_center,
         scoring_features,
+        boundary_features,
         trail_points,
         moose,
         context_layers,
@@ -438,18 +463,19 @@ def test_build_deck_includes_context_layers_when_toggled_on(tmp_path):
         show_roads=True,
     )
 
-    # scoring grid + habitat + roads + trail lines + trail points + moose
-    assert len(deck.layers) == 6
+    # boundary + scoring grid + habitat + roads + trail lines + trail
+    # points + moose
+    assert len(deck.layers) == 7
 
 
 def test_build_deck_view_state_centers_on_given_view_center(tmp_path):
     current_prefix, _ = _full_current_prefix(tmp_path)
     con = create_connection()
-    scoring_features, view_center, trail_points, _context_layers, moose = _load_all_layers(
-        con, current_prefix
+    scoring_features, boundary_features, view_center, trail_points, _context_layers, moose = (
+        _load_all_layers(con, current_prefix)
     )
 
-    deck = build_deck(view_center, scoring_features, trail_points, moose, {})
+    deck = build_deck(view_center, scoring_features, boundary_features, trail_points, moose, {})
 
     assert deck.initial_view_state.longitude == pytest.approx(view_center[0])
     assert deck.initial_view_state.latitude == pytest.approx(view_center[1])

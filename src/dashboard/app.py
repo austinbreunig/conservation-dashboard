@@ -11,9 +11,14 @@ full dashboard architecture 5.7 describes, all still read live from
   red (high priority) ramp over the real `[SCORE_FLOOR, SCORE_CEILING]`
   range `scoring.score.compute_score()` guarantees for any non-empty
   cell. Cells with no score (`score_0_10 is NaN`, `scoring.score`'s
-  "no real signal" case) are filtered out of this layer entirely rather
-  than drawn as a false "zero" -- they render as a gap in the grid, not a
-  claimed value.
+  "no real signal" case) get a fully transparent fill rather than a
+  false "zero" -- they still render as a thin wireframe square (the
+  layer's uniform stroke), not a claimed value or a gap in the grid.
+* **County boundary** (architecture 2.2.1, `boco_county_boundary`) --
+  always-on outline, no sidebar control, drawn beneath every other
+  layer as the map's locator frame (Refinement visual pass; the data
+  was already published to `current/` by the pipeline, just never read
+  here before).
 * **Context layers** (FR-5.2) -- trails (`boco_trailheads` points union
   `boco_trailsegs` lines, matching architecture 2.4's own "nearest of
   trailheads ∪ trail segments" definition of "trail"), habitat
@@ -23,7 +28,8 @@ full dashboard architecture 5.7 describes, all still read live from
 * **Synthetic moose-sightings layer** (architecture 2.5) -- always
   rendered, always labeled "Moose Sightings (Synthetic / Illustrative)"
   in both the map legend/caption and the point layer's own tooltip; no
-  sidebar control can turn it off.
+  sidebar control can turn it off. Rendered bright cyan for contrast
+  against the map's black base (`map_style=None`).
 * **"Last updated"** (FR-5.4) -- `current/run_manifest.json`'s
   `run_timestamp_utc`/`status`, unchanged from T1.16.
 * **Methodology note** (FR-4.3) -- `build_methodology_note()` reads
@@ -77,6 +83,14 @@ from scoring.score import (
 TRAILSEGS_LAYER_NAME = "boco_trailsegs"
 HABITAT_LAYER_NAME = "boco_critical_wildlife_habitats"
 ROADS_LAYER_NAME = "boco_county_roads"
+
+# County boundary (config/sources.yaml, `pipeline.run.MVP_REAL_SOURCE_NAMES`)
+# -- already published to `current/` by every MVP run, just never read by
+# the dashboard until now. Rendered always-on like the moose-sightings
+# layer below (no sidebar checkbox): it's the map's locator frame, not
+# filterable content, so a viewer shouldn't be able to switch it off and
+# lose their bearings.
+BOUNDARY_LAYER_NAME = "boco_county_boundary"
 
 # Sequential color ramp, pale yellow (low restoration priority) -> dark
 # red (high) -- ColorBrewer YlOrRd, a standard low/high sequential
@@ -234,12 +248,17 @@ def load_scoring_grid_features(
     con: duckdb.DuckDBPyConnection,
     current_prefix: str = DEFAULT_CURRENT_PREFIX,
 ) -> list[dict[str, Any]]:
-    """Read `current/scoring_grid.geoparquet`'s non-empty cells (`FR-5.2`)
-    as a list of GeoJSON `Feature` dicts, each carrying `cell_id`,
-    `score_0_10`, and a precomputed `fill_color` property (`score_to_color()`)
-    for `GeoJsonLayer` to render directly. Cells with `score_0_10 IS NULL`
-    (`scoring.score`'s "no real signal" case) are excluded entirely --
-    they render as a gap in the grid, not a false low/zero score.
+    """Read every cell of `current/scoring_grid.geoparquet` (`FR-5.2`) as
+    a list of GeoJSON `Feature` dicts, each carrying `cell_id`,
+    `score_0_10` (`None` for a cell with no real signal), and a
+    precomputed `fill_color` property (`score_to_color()`) for
+    `GeoJsonLayer` to render directly. Cells with `score_0_10 IS NULL`
+    (`scoring.score`'s "no real signal" case) are *not* dropped -- they
+    get a fully transparent `fill_color` (`[0, 0, 0, 0]`) instead, so
+    `build_deck()`'s uniform stroke still traces their cell boundary. The
+    grid then reads as one continuous wireframe with color filled in
+    where there's a real score, rather than scored cells floating with
+    gaps where there's no data.
     """
     path = _layer_path(SCORING_GRID_LAYER_NAME, current_prefix)
     df = (
@@ -253,28 +272,32 @@ def load_scoring_grid_features(
                     ST_Transform(geometry, 'EPSG:26913', 'EPSG:4326', always_xy := true)
                 ) AS geojson
             FROM read_parquet('{path}')
-            WHERE score_0_10 IS NOT NULL
             """
         )
         .fetchdf()
     )
     features = []
     for _, row in df.iterrows():
-        score = float(row["score_0_10"])
+        has_score = pd.notna(row["score_0_10"])
+        score = float(row["score_0_10"]) if has_score else None
         features.append(
             {
                 "type": "Feature",
                 "geometry": json.loads(row["geojson"]),
                 "properties": {
                     "cell_id": int(row["cell_id"]),
-                    "score_0_10": round(score, 2),
-                    "fill_color": score_to_color(score),
+                    "score_0_10": round(score, 2) if has_score else None,
+                    "fill_color": score_to_color(score) if has_score else [0, 0, 0, 0],
                     # Same "tooltip" key every pickable layer's data
                     # carries (see build_deck()) -- one predictable
                     # accessor path for the deck-wide tooltip template,
                     # rather than a different property name per layer
                     # the template would need to enumerate.
-                    "tooltip": f"Restoration priority: {round(score, 1)} / 10",
+                    "tooltip": (
+                        f"Restoration priority: {round(score, 1)} / 10"
+                        if has_score
+                        else "No nearby sightings or context layer -- not scored"
+                    ),
                 },
             }
         )
@@ -385,6 +408,7 @@ def _feature_collection(features: list[dict[str, Any]]) -> dict[str, Any]:
 def build_deck(
     view_center: tuple[float, float],
     scoring_grid_features: list[dict[str, Any]],
+    boundary_features: list[dict[str, Any]],
     trail_points: pd.DataFrame,
     moose_points: pd.DataFrame,
     context_layers: dict[str, list[dict[str, Any]]],
@@ -393,11 +417,13 @@ def build_deck(
     show_habitat: bool = True,
     show_roads: bool = True,
 ) -> pdk.Deck:
-    """Build the full pydeck `Deck` (FR-5.2): the color-coded scoring
-    grid, the trails/habitat/roads context layers (each individually
-    included only when its `show_*` flag is on), and the always-on
-    synthetic moose-sightings layer (architecture 2.5 -- no `show_*` flag
-    exists for it; it is unconditionally appended).
+    """Build the full pydeck `Deck` (FR-5.2): the always-on county
+    boundary (map locator frame), the color-coded scoring grid, the
+    trails/habitat/roads context layers (each individually included only
+    when its `show_*` flag is on), and the always-on synthetic
+    moose-sightings layer (architecture 2.5 -- no `show_*` flag exists
+    for either the boundary or moose sightings; both are unconditionally
+    appended whenever there's data for them).
 
     `context_layers` holds the line/polygon `GeoJsonLayer` feature lists
     for the three togglable layers, keyed `"trails"`/`"habitat"`/
@@ -405,16 +431,40 @@ def build_deck(
     "trail" context, trailheads, is `trail_points` instead, since it
     needs its own `ScatterplotLayer`, not a `GeoJsonLayer`).
     """
-    layers: list[pdk.Layer] = [
+    layers: list[pdk.Layer] = []
+
+    # Drawn first (bottom of the stack) so every other layer sits on top
+    # of it -- it's the map's locator frame, not a data layer competing
+    # for attention.
+    if boundary_features:
+        layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                data=_feature_collection(boundary_features),
+                filled=False,
+                stroked=True,
+                get_line_color=[255, 255, 255, 220],
+                line_width_min_pixels=2,
+            )
+        )
+
+    layers.append(
         pdk.Layer(
             "GeoJsonLayer",
             data=_feature_collection(scoring_grid_features),
             filled=True,
-            stroked=False,
+            # Stroked on every cell, not just scored ones: a null-score
+            # cell has a fully transparent fill (load_scoring_grid_features)
+            # so this thin, low-alpha line is *all* that renders for it --
+            # the grid's wireframe showing through the gap -- while a
+            # scored cell's opaque fill just about covers its own stroke.
+            stroked=True,
             get_fill_color="properties.fill_color",
+            get_line_color=[255, 255, 255, 60],
+            line_width_min_pixels=1,
             pickable=True,
         )
-    ]
+    )
 
     habitat_features = context_layers.get("habitat", [])
     if show_habitat and habitat_features:
@@ -481,8 +531,16 @@ def build_deck(
                 "ScatterplotLayer",
                 data=moose_df,
                 get_position=["lon", "lat"],
-                get_radius=100,
-                get_fill_color=[106, 27, 154, 220],
+                get_radius=110,
+                # Bright cyan against `map_style=None`'s black base --
+                # the old purple ((106, 27, 154)) nearly disappeared on
+                # it. Cyan also doesn't collide with the yellow/red
+                # scoring ramp, the green habitat fill, or the brown
+                # trail markers already on the map.
+                get_fill_color=[0, 229, 255, 255],
+                get_line_color=[0, 0, 0, 200],
+                line_width_min_pixels=1,
+                stroked=True,
                 pickable=True,
             )
         )
@@ -507,11 +565,14 @@ def main() -> None:
     show_trails = st.sidebar.checkbox("Trails (trailheads + trail segments)", value=True)
     show_habitat = st.sidebar.checkbox("Critical wildlife habitat", value=True)
     show_roads = st.sidebar.checkbox("Roads", value=True)
-    st.sidebar.caption(f"Always shown, not togglable: {MOOSE_SIGHTINGS_LABEL}")
+    st.sidebar.caption(
+        f"Always shown, not togglable: county boundary, {MOOSE_SIGHTINGS_LABEL}"
+    )
 
     try:
         con = get_connection()
         scoring_grid_features = load_scoring_grid_features(con)
+        boundary_features = load_context_layer_features(con, BOUNDARY_LAYER_NAME)
         view_center = compute_view_center(con)
         trail_points = load_point_layer(
             con, TRAILHEADS_LAYER_NAME, extra_columns=("TrailheadName",)
@@ -532,6 +593,7 @@ def main() -> None:
         build_deck(
             view_center,
             scoring_grid_features,
+            boundary_features,
             trail_points,
             moose_points,
             context_layers,
@@ -542,8 +604,9 @@ def main() -> None:
     )
     st.caption(
         "Scoring grid color key: pale yellow = low restoration priority "
-        "-> dark red = high restoration priority. Blank cells have no "
-        "nearby sightings or context layer, not a zero score."
+        "-> dark red = high restoration priority. Cells outlined but "
+        "unfilled have no nearby sightings or context layer -- not a "
+        "zero score."
     )
     st.caption(
         f"Scoring grid: {len(scoring_grid_features)} cell(s) -- "
