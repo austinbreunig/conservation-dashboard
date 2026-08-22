@@ -443,7 +443,10 @@ def build_deck(
                 data=_feature_collection(boundary_features),
                 filled=False,
                 stroked=True,
-                get_line_color=[255, 255, 255, 220],
+                # Black -- white read as a soft locator frame but blended
+                # into the light end of the scoring ramp/basemap glow;
+                # black holds contrast against every fill color in use.
+                get_line_color=[0, 0, 0, 255],
                 line_width_min_pixels=2,
             )
         )
@@ -509,13 +512,31 @@ def build_deck(
         if not trail_points.empty:
             trail_points = trail_points.copy()
             trail_points["tooltip"] = "Trailhead: " + trail_points["TrailheadName"].astype(str)
+            # "TH" text label, not a solid dot -- the old brown
+            # ScatterplotLayer (radius=120, [141, 85, 36]) sat close
+            # enough to the scoring grid's yellow/red ramp to read as
+            # just another grid cell. TextLayer needs no icon atlas
+            # image, so this stays a pure pydeck/Streamlit change.
+            trail_points["label"] = "TH"
             layers.append(
                 pdk.Layer(
-                    "ScatterplotLayer",
+                    "TextLayer",
                     data=trail_points,
                     get_position=["lon", "lat"],
-                    get_radius=120,
-                    get_fill_color=[141, 85, 36, 220],
+                    get_text="label",
+                    get_color=[255, 255, 255, 255],
+                    get_size=14,
+                    get_text_anchor="'middle'",
+                    get_alignment_baseline="'center'",
+                    # sdf must be on for outline_color/outline_width to
+                    # render (deck.gl TextLayer) -- without it the label
+                    # would be flat white text, low-contrast against the
+                    # basemap and the lighter end of the scoring ramp.
+                    font_settings={"sdf": True},
+                    outline_color=[0, 0, 0, 255],
+                    outline_width=2,
+                    font_family="monospace",
+                    font_weight=700,
                     pickable=True,
                 )
             )
@@ -531,7 +552,9 @@ def build_deck(
                 "ScatterplotLayer",
                 data=moose_df,
                 get_position=["lon", "lat"],
-                get_radius=110,
+                # 170m, up from 110m -- more visible at typical zoom
+                # without dwarfing the 500m grid cells.
+                get_radius=170,
                 # Bright cyan against `map_style=None`'s black base --
                 # the old purple ((106, 27, 154)) nearly disappeared on
                 # it. Cyan also doesn't collide with the yellow/red
