@@ -28,11 +28,18 @@ SIGHTING_DENSITY_CAP: 5
 DENSITY_SEARCH_BUFFER_M: 250
 
 # Scoring weights (architecture 2.4) -- must sum to 1.0
+# Retuned 2026-08-22 (spec/tasks.md T3.4, first real retuning cycle):
+# habitat/corridor raised so a habitat/corridor-adjacent cell scores
+# meaningfully even off a single sighting; road lowered to match (roads
+# are the densest, least differentiating of the four proximity layers --
+# nearly every cell in the county is within max_dist of one). Original
+# architecture 2.4 defaults were W_HABITAT=0.14/W_CORRIDOR=0.11/
+# W_TRAIL=0.20/W_ROAD=0.15.
 W_BASE: 0.40
-W_HABITAT: 0.14
-W_CORRIDOR: 0.11
-W_TRAIL: 0.20
-W_ROAD: 0.15
+W_HABITAT: 0.20
+W_CORRIDOR: 0.20
+W_TRAIL: 0.15
+W_ROAD: 0.05
 
 # Proximity decay distances, meters (architecture 2.4) -- linear decay,
 # proximity == 0 at d >= max_dist

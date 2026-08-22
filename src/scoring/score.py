@@ -15,17 +15,24 @@ score_0_10 = 10 * density_norm * (
 )
 ```
 
-**Empty cells -> `score_0_10 = NaN`, not `0` (issue #7/#8 review,
-2026-08-02).** A cell with zero sightings *and* beyond `max_dist` for
-every one of the four proximity layers carries no real signal at all --
-under the formula above it would compute to a `0` indistinguishable from
-"assessed, genuinely low priority" (e.g. a cell with real proximity to
-habitat but zero sightings this cycle). Such a cell is left `NaN`
-("empty"/no value) so the dashboard can render it blank rather than
-implying a definitive low score for a cell nothing meaningful is known
-about. Every non-empty cell -- i.e. any cell with at least one sighting
-(since `W_BASE > 0` this alone guarantees `score_0_10 > 0`) or within
-`max_dist` of at least one layer -- is then clamped to `[1, 10]`, not
+**Zero-sighting cells -> `score_0_10 = NaN`, not `0`/floored-`1`
+(revised 2026-08-22, dashboard visual-review finding).** `density_norm`
+gates the entire formula -- with zero sightings it's `0`, so
+`weighted_sum` (proximity to habitat/corridor/trail/road) never actually
+contributes anything; a "scored" cell with no sighting is really just
+`0` wearing whatever floor value made it not read as blank. The original
+(issue #7/#8 review, 2026-08-02) design floored such a cell to `1`
+whenever it was within `max_dist` of *any* proximity layer, reasoning
+that it "still carries real proximity information." In practice this
+meant most of the county -- anywhere near a road or trail, with zero
+moose signal -- rendered as a uniform pale-yellow "assessed, low
+priority" cell indistinguishable from a genuine sighting-driven low
+score (visually confirmed against the deployed dashboard, moose
+sightings themselves confined to a west-county-only synthetic bbox,
+`acquisition/synthetic.py`). A cell now needs **at least one sighting**
+(`sighting_count >= 1`) to be scored at all; `sighting_count == 0` is
+always `NaN` ("no sighting signal this cycle"), regardless of proximity.
+Every scored (non-empty) cell is then clamped to `[1, 10]`, not
 `[0, 10]`: a real, non-empty signal is never displayed as a bare `0`,
 which reads the same as "no data" on a color-coded map.
 """
@@ -58,7 +65,7 @@ _PROXIMITY_LAYERS = (
 
 _WEIGHT_KEYS = ("W_BASE", "W_HABITAT", "W_CORRIDOR", "W_TRAIL", "W_ROAD")
 
-# score_0_10's floor for any non-empty cell (issue #7/#8 review) -- see
+# score_0_10's floor for any non-empty (sighting_count >= 1) cell -- see
 # module docstring.
 SCORE_FLOOR = 1.0
 SCORE_CEILING = 10.0
@@ -152,9 +159,11 @@ def compute_score(
     )
     raw_score = 10 * density_norm * weighted_sum
 
+    # A cell with zero sightings is always empty (NaN), regardless of
+    # proximity to any layer -- density_norm gates the whole formula to
+    # 0 anyway, so scoring it would only ever floor to a value with no
+    # real signal behind it. See module docstring, 2026-08-22 revision.
     is_empty = result["sighting_count"] == 0
-    for layer_name, _distance_col, _weight_key in _PROXIMITY_LAYERS:
-        is_empty = is_empty & (proximities[layer_name] == 0)
 
     score_0_10 = raw_score.where(~is_empty)
     score_0_10 = score_0_10.clip(lower=SCORE_FLOOR, upper=SCORE_CEILING)

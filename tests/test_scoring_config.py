@@ -13,15 +13,16 @@ import yaml
 
 SCORING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "scoring.yaml"
 
-# The exact values architecture Section 2.2/2.4 signed off 2026-07-24 --
-# see the comment block at the top of config/scoring.yaml for the formula
-# these feed.
+# The live weights, retuned 2026-08-22 (spec/tasks.md T3.4, first real
+# retuning cycle -- see config/scoring.yaml's own comment for why).
+# Original architecture Section 2.2/2.4 sign-off (2026-07-24) values were
+# W_HABITAT=0.14/W_CORRIDOR=0.11/W_TRAIL=0.20/W_ROAD=0.15.
 EXPECTED_WEIGHTS = {
     "W_BASE": 0.40,
-    "W_HABITAT": 0.14,
-    "W_CORRIDOR": 0.11,
-    "W_TRAIL": 0.20,
-    "W_ROAD": 0.15,
+    "W_HABITAT": 0.20,
+    "W_CORRIDOR": 0.20,
+    "W_TRAIL": 0.15,
+    "W_ROAD": 0.05,
 }
 EXPECTED_MAX_DIST = {"habitat": 1500, "corridor": 1500, "trail": 800, "road": 800}
 
@@ -71,14 +72,16 @@ def test_scoring_weights_sum_to_one():
 
 
 def test_scoring_config_matches_architecture_signed_off_values():
-    """config/scoring.yaml is supposed to carry the *exact* numeric
-    defaults architecture Section 2.2/2.4 signed off on 2026-07-24, not
-    just "some" weights/distances that happen to sum to 1.0.
+    """config/scoring.yaml is supposed to carry the exact numeric values
+    currently in effect -- the original architecture Section 2.2/2.4
+    sign-off (2026-07-24) for grid/density/max_dist, and the T3.4
+    2026-08-22 retune for the five weights (see EXPECTED_WEIGHTS above)
+    -- not just "some" weights/distances that happen to sum to 1.0.
 
     This test checks every individual value named in spec/tasks.md's
     T1.3 validation column (grid cell size, density cap/buffer, each of
     the five weights, each of the four max_dist values, and the geometry
-    simplify tolerance) against that signed-off list.
+    simplify tolerance) against that list.
 
     Edge case: GEOMETRY_SIMPLIFY_TOLERANCE (1e-5) is checked with a
     relative tolerance rather than exact float equality, since it's

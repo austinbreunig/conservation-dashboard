@@ -187,11 +187,13 @@ def test_compute_score_empty_cell_is_null_not_zero():
     assert pd.isna(result["score_0_10"].iloc[0])
 
 
-def test_compute_score_zero_sightings_but_near_a_layer_is_not_empty():
-    """A cell with no sightings but within max_dist of at least one
-    layer still carries real proximity information -- it must not be
-    nulled out, even though density_norm = 0 forces its raw score to 0
-    (W_BASE never fires without at least one sighting)."""
+def test_compute_score_zero_sightings_is_always_empty_even_near_a_layer():
+    """Revised 2026-08-22: a cell with no sightings is empty (NaN)
+    regardless of proximity to habitat/corridor/trail/road --
+    density_norm = 0 zeroes the whole formula, so scoring it would only
+    ever floor to a value with no real sighting signal behind it. Before
+    this revision such a cell floored to 1, indistinguishable on the map
+    from a genuine sighting-driven low score."""
     grid_features = _grid_features(
         [
             {
@@ -206,9 +208,7 @@ def test_compute_score_zero_sightings_but_near_a_layer_is_not_empty():
 
     result = compute_score(grid_features, config=_CONFIG)
 
-    # Not empty -> clamped into [1, 10], even though density_norm = 0
-    # forces the raw formula to 0.
-    assert result["score_0_10"].iloc[0] == pytest.approx(1.0)
+    assert pd.isna(result["score_0_10"].iloc[0])
 
 
 def test_compute_score_missing_layer_distance_treated_as_beyond_max_dist():
